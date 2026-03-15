@@ -135,9 +135,12 @@ public final class BatchSolver {
         // 4. Pre-scan: build ambiguity parameter table from slip flags
         List<AmbParam> ambParams = scanAmbiguities(epochs, rtk, nav, opt);
 
-        // Remove short segments (< 5 epochs) that cause rank deficiency
-        // and don't contribute useful ambiguity information
-        ambParams.removeIf(ap -> (ap.endEpoch - ap.startEpoch + 1) < 20);
+        // Remove short segments that cause rank deficiency.
+        // Minimum length scales with total epochs: at least 30% of the window
+        // to ensure sufficient observations per ambiguity parameter.
+        int nTotalEpochs = epochs.size();
+        int minSegLen = Math.max(3, (int)(nTotalEpochs * 0.3));
+        ambParams.removeIf(ap -> (ap.endEpoch - ap.startEpoch + 1) < minSegLen);
         for (int j = 0; j < ambParams.size(); j++) {
             ambParams.get(j).blsIndex = 3 + j;
         }
@@ -389,7 +392,7 @@ public final class BatchSolver {
                 ambValues[j] += result[3 + j];
             }
 
-            double dpos = Math.sqrt(result[0] * result[0] + result[1] * result[1] + result[2] * result[2]);
+            double dpos = Math.sqrt(result[0]*result[0]+result[1]*result[1]+result[2]*result[2]); System.err.printf("iter dpos=%.3f dxa0=%.1f%n",dpos,result.length>3?result[3]:0);
             if (dpos < CONV_THRESHOLD) break;
         }
 
@@ -686,6 +689,10 @@ public final class BatchSolver {
             for (int i = 0; i < ed.ns; i++) {
                 int sat = ed.sat[i];
                 int satIdx = sat - 1;
+
+                // Filter by navigation system
+                int sys = SatelliteUtil.satsys(sat)[0];
+                if ((sys & opt.navsys) == 0) continue;
 
                 for (int f = 0; f < nf; f++) {
                     // Check for carrier phase availability
