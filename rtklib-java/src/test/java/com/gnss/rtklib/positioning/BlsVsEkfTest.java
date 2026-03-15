@@ -74,6 +74,12 @@ class BlsVsEkfTest {
         opt.eratio[0] = 150.0; opt.eratio[1] = 150.0; opt.eratio[2] = 150.0;
         opt.err[1] = 0.003; opt.err[2] = 0.006;
         opt.niter = 1;
+        // SNR mask from static.conf: 35 dBHz for all frequencies at all elevations
+        opt.snrmask.ena[0] = 1; // rover
+        opt.snrmask.ena[1] = 1; // base
+        for (int f = 0; f < opt.snrmask.mask.length; f++) {
+            java.util.Arrays.fill(opt.snrmask.mask[f], 35.0);
+        }
         return opt;
     }
 

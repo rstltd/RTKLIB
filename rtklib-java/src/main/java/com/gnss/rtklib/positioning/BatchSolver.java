@@ -165,6 +165,13 @@ public final class BatchSolver {
         opt.maxinno[0] = 100.0;  // relaxed outlier rejection for BLS
         opt.maxinno[1] = 100.0;
 
+        // Outlier weights: 1.0 = normal, 0.0 = excluded.
+        // Indexed by [epoch][obs_within_epoch]. Built after first solve pass.
+        double[][] obsWeights = null;
+
+        // Outer loop for iterative reweighting (1 = initial, 2+ = reweight)
+        for (int reweightPass = 0; reweightPass < 2; reweightPass++) {
+
         for (int iter = 0; iter < MAX_ITER; iter++) {
             N = new double[nx * nx];
             b = new double[nx];
@@ -277,7 +284,10 @@ public final class BatchSolver {
                 totalObs += nv;
 
                 // Remap H from EKF layout to BLS layout and accumulate normal equations
-                accumulateNormal(N, b, Hekf, v, R, nv, rtk.nx, nx, ambParams, ep, opt);
+                double[] epWeights = (obsWeights != null && ep < obsWeights.length) ?
+                                      obsWeights[ep] : null;
+                accumulateNormal(N, b, Hekf, v, R, nv, rtk.nx, nx, ambParams, ep, opt,
+                                 epWeights);
             }
 
             // Fix rank deficiency in Naa by:
@@ -392,9 +402,16 @@ public final class BatchSolver {
                 ambValues[j] += result[3 + j];
             }
 
-            double dpos = Math.sqrt(result[0]*result[0]+result[1]*result[1]+result[2]*result[2]); System.err.printf("iter dpos=%.3f dxa0=%.1f%n",dpos,result.length>3?result[3]:0);
+            double dpos = Math.sqrt(result[0] * result[0] + result[1] * result[1] + result[2] * result[2]);
             if (dpos < CONV_THRESHOLD) break;
+        } // end Gauss-Newton iterations
+
+        // Compute post-fit residuals for outlier detection (reweighting)
+        if (reweightPass == 0) {
+            obsWeights = computeOutlierWeights(epochs, ambParams, rtk, nav, opt, pos, ambValues, nx);
         }
+
+        } // end reweighting pass
 
         // Restore outlier threshold
         opt.maxinno[0] = savedMaxinno[0];
@@ -825,6 +842,103 @@ public final class BatchSolver {
     }
 
     /**
+     * Compute post-fit residuals and return observation weights for reweighting.
+     * Observations with |v| > 3*sqrt(R[i,i]) get weight 0 (excluded).
+     * Returns double[nEpochs][nv_per_epoch] or null if no outliers found.
+     */
+    private static double[][] computeOutlierWeights(
+            List<EpochData> epochs, List<AmbParam> ambParams,
+            RtkState rtk, Navigation nav, ProcessingOptions opt,
+            double[] pos, double[] ambValues, int nx) {
+        int nf = FilterState.NF(opt);
+        double[][] weights = new double[epochs.size()][];
+        int outlierCount = 0;
+        int totalObs = 0;
+
+        System.arraycopy(pos, 0, rtk.x, 0, 3);
+
+        for (int ep = 0; ep < epochs.size(); ep++) {
+            EpochData ed = epochs.get(ep);
+            if (ed.ns <= 0) continue;
+            int n = ed.nu + ed.nr;
+
+            // Reset ssat
+            for (int i = 0; i < MAXSAT; i++) {
+                for (int j = 0; j < NFREQ; j++) {
+                    rtk.ssat[i].vsat[j] = 0;
+                    rtk.ssat[i].resp[j] = 0;
+                    rtk.ssat[i].resc[j] = 0;
+                }
+            }
+
+            // Compute zdres at converged position
+            double[] yRov = new double[nf * 2 * ed.nu];
+            double[] eRov = new double[3 * ed.nu];
+            double[] azelRov = new double[2 * ed.nu];
+            double[] freqRov = new double[nf * ed.nu];
+            ObsData[] obsRov = new ObsData[ed.nu];
+            System.arraycopy(ed.obs, 0, obsRov, 0, ed.nu);
+            if (Rtkpos.zdres(0, obsRov, ed.nu, ed.rs, ed.dts, ed.var, ed.svh,
+                              nav, pos, opt, yRov, eRov, azelRov, freqRov) == 0) continue;
+
+            ObsData[] obsBase = new ObsData[ed.nr];
+            System.arraycopy(ed.obs, ed.nu, obsBase, 0, ed.nr);
+            double[] rsBase = new double[6 * ed.nr]; System.arraycopy(ed.rs, ed.nu * 6, rsBase, 0, 6 * ed.nr);
+            double[] dtsBase = new double[2 * ed.nr]; System.arraycopy(ed.dts, ed.nu * 2, dtsBase, 0, 2 * ed.nr);
+            double[] varBase = new double[ed.nr]; System.arraycopy(ed.var, ed.nu, varBase, 0, ed.nr);
+            int[] svhBase = new int[ed.nr]; System.arraycopy(ed.svh, ed.nu, svhBase, 0, ed.nr);
+            double[] yBase = new double[nf * 2 * ed.nr];
+            double[] eBase = new double[3 * ed.nr]; double[] azelBase = new double[2 * ed.nr];
+            double[] freqBase = new double[nf * ed.nr];
+            if (Rtkpos.zdres(1, obsBase, ed.nr, rsBase, dtsBase, varBase, svhBase,
+                              nav, opt.rb, opt, yBase, eBase, azelBase, freqBase) == 0) continue;
+
+            double[] y = new double[nf * 2 * n], e = new double[3 * n];
+            double[] azel = new double[2 * n], freq = new double[nf * n];
+            System.arraycopy(yRov, 0, y, 0, nf * 2 * ed.nu);
+            System.arraycopy(yBase, 0, y, ed.nu * nf * 2, nf * 2 * ed.nr);
+            System.arraycopy(eRov, 0, e, 0, 3 * ed.nu); System.arraycopy(eBase, 0, e, ed.nu * 3, 3 * ed.nr);
+            System.arraycopy(azelRov, 0, azel, 0, 2 * ed.nu); System.arraycopy(azelBase, 0, azel, ed.nu * 2, 2 * ed.nr);
+            System.arraycopy(freqRov, 0, freq, 0, nf * ed.nu); System.arraycopy(freqBase, 0, freq, ed.nu * nf, nf * ed.nr);
+
+            for (int i = 0; i < ed.ns; i++) {
+                for (int j = 0; j < nf; j++) {
+                    rtk.ssat[ed.sat[i] - 1].snr_rover[j] = ed.obs[ed.iu[i]].SNR[j];
+                    rtk.ssat[ed.sat[i] - 1].snr_base[j] = ed.obs[ed.ir[i]].SNR[j];
+                }
+                rtk.ssat[ed.sat[i] - 1].sys = SatelliteUtil.satsys(ed.sat[i])[0];
+            }
+            setAmbiguityStates(rtk, ambParams, ep, ambValues, false);
+            rtk.sol.time = ed.obs[0].time;
+
+            int ny = ed.ns * nf * 2 + 2;
+            double[] v = new double[ny];
+            double[] R = new double[ny * ny];
+            int[] vflg = new int[ny];
+            double dt = ed.obs[0].time.timediff(ed.obs[ed.nu].time);
+            int nv = Rtkpos.ddres(rtk, ed.obs, dt, rtk.x, null, ed.sat,
+                                   y, e, azel, freq, ed.iu, ed.ir, ed.ns,
+                                   v, null, R, vflg);
+            if (nv <= 0) continue;
+
+            // Flag outliers: |v| > 3 * sqrt(R[i,i])
+            weights[ep] = new double[nv];
+            for (int i = 0; i < nv; i++) {
+                double sigma = Math.sqrt(Math.max(R[i + i * nv], 1e-10));
+                if (Math.abs(v[i]) > 3.0 * sigma) {
+                    weights[ep][i] = 0.0; // exclude
+                    outlierCount++;
+                } else {
+                    weights[ep][i] = 1.0; // keep
+                }
+                totalObs++;
+            }
+        }
+
+        return outlierCount > 0 ? weights : null;
+    }
+
+    /**
      * Remap H from EKF layout to BLS layout and accumulate into normal equations.
      * N += H_bls' * R^-1 * H_bls
      * b += H_bls' * R^-1 * v
@@ -833,7 +947,8 @@ public final class BatchSolver {
                                           double[] Hekf, double[] v, double[] R,
                                           int nv, int nxEkf, int nxBls,
                                           List<AmbParam> ambParams, int epoch,
-                                          ProcessingOptions opt) {
+                                          ProcessingOptions opt,
+                                          double[] obsWeights) {
         // Build H_bls [nxBls x nv] from H_ekf [nxEkf x nv]
         // H_ekf is stored column-major: H_ekf[k + i*nxEkf] = dv[i]/dx[k]
         double[] Hbls = new double[nxBls * nv];
@@ -855,13 +970,19 @@ public final class BatchSolver {
             }
         }
 
-        // Hbls is stored as J^T (nxBls × nv, column-major) where J is the Jacobian
-        // Hbls[k + i*nxBls] = J[i,k] = dv[i]/dx[k]
-        // Normal equation: N += J^T * W * J, b += J^T * W * v
-        //
-        // For efficiency with block-diagonal R, use diagonal-only inverse
-        // (DD covariance is block-diagonal but within small blocks).
-        // Full inverse is expensive for large nv, so use explicit loops.
+        // Apply observation weights (for iterative reweighting / outlier exclusion)
+        if (obsWeights != null) {
+            for (int i = 0; i < nv; i++) {
+                double w = (i < obsWeights.length) ? obsWeights[i] : 1.0;
+                if (w <= 0) {
+                    // Zero out this observation's contribution
+                    v[i] = 0;
+                    for (int k = 0; k < nxBls; k++) Hbls[k + i * nxBls] = 0;
+                    for (int j = 0; j < nv; j++) { R[i + j * nv] = 0; R[j + i * nv] = 0; }
+                    R[i + i * nv] = 1.0; // prevent singular R
+                }
+            }
+        }
 
         // Full R^-1 (DD covariance is block-diagonal, NOT diagonal)
         double[] Rinv = new double[nv * nv];
