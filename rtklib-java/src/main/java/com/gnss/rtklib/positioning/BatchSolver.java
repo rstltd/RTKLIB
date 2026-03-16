@@ -479,10 +479,24 @@ public final class BatchSolver {
         // Sort ambiguities by Qaa diagonal (ascending = most precise first).
         // Try LAMBDA with full set first; if ratio fails, progressively remove
         // the weakest ambiguities until ratio passes or subset too small.
+        // Sort by LD conditional variance (D[i] from Q = L'DL decomposition).
+        // D[i] represents how well ambiguity i can be resolved given the others.
+        // This is more accurate than Qaa diagonal for LAMBDA search ordering.
+        double[] ldL = new double[nAR * nAR];
+        double[] ldD = new double[nAR];
+        double[] QaaClone = QaaAR.clone();
         Integer[] sortOrder = new Integer[nAR];
         for (int i = 0; i < nAR; i++) sortOrder[i] = i;
-        java.util.Arrays.sort(sortOrder, (a1, b1) ->
-                Double.compare(QaaAR[a1 + a1 * nAR], QaaAR[b1 + b1 * nAR]));
+
+        if (Lambda.LD(nAR, QaaClone, ldL, ldD) == 0) {
+            // Sort by D[i] ascending (smallest conditional variance = easiest to fix)
+            java.util.Arrays.sort(sortOrder, (a1, b1) ->
+                    Double.compare(ldD[a1], ldD[b1]));
+        } else {
+            // Fallback to Qaa diagonal if LD fails
+            java.util.Arrays.sort(sortOrder, (a1, b1) ->
+                    Double.compare(QaaAR[a1 + a1 * nAR], QaaAR[b1 + b1 * nAR]));
+        }
 
         float ratio = 0;
         double[] bestF = null;
