@@ -30,7 +30,7 @@ public final class BatchSolver {
 
     private BatchSolver() {}
 
-    private static final int MAX_ITER = 4;
+    private static final int MAX_ITER = 6;
     private static final double CONV_THRESHOLD = 1e-4; // m
 
     /**
@@ -165,14 +165,8 @@ public final class BatchSolver {
         opt.maxinno[0] = 100.0;
         opt.maxinno[1] = 100.0;
 
-        // Outlier weights
-        double[][] obsWeights = null;
-
         double[] N = null;
         double[] b = null;
-
-        // Outer loop for iterative reweighting
-        for (int reweightPass = 0; reweightPass < 2; reweightPass++) {
 
         for (int iter = 0; iter < MAX_ITER; iter++) {
             N = new double[nx * nx];
@@ -231,21 +225,25 @@ public final class BatchSolver {
 
                 if (ddObs.isEmpty()) continue;
 
-                // Apply outlier weights
-                double[] epWeights = (obsWeights != null && ep < obsWeights.length)
-                        ? obsWeights[ep] : null;
-
-                // Accumulate N += H'WH, b += H'Wv
-                int obsIdx = 0;
+                // Accumulate N += H'WH, b += H'Wv with Huber robust weighting
                 for (DdObs dd : ddObs) {
                     double w = 1.0 / dd.var;
 
-                    // Apply outlier weight if available
-                    if (epWeights != null && obsIdx < epWeights.length && epWeights[obsIdx] <= 0) {
-                        obsIdx++;
-                        continue; // skip this observation
+                    // Huber M-estimator: downweight observations with large
+                    // normalized residuals. On the first iteration (ambiguities
+                    // from code-phase init), residuals may be large — Huber
+                    // naturally handles this without a separate reweighting pass.
+                    // Apply Huber downweighting only on last iteration
+                    // (earlier iterations: let LS converge without weight perturbation;
+                    //  last iteration: refine with robust weights)
+                    if (iter >= 1) {
+                        double sigma = Math.sqrt(dd.var);
+                        double r = Math.abs(dd.v) / sigma;
+                        double HUBER_K = 4.0; // conservative: only extreme outliers > 4σ
+                        if (r > HUBER_K) {
+                            w *= HUBER_K / r;
+                        }
                     }
-                    obsIdx++;
 
                     // b[0:3] += hPos * w * v
                     for (int k = 0; k < 3; k++) {
@@ -366,15 +364,7 @@ public final class BatchSolver {
 
             double dpos = Math.sqrt(dxp[0] * dxp[0] + dxp[1] * dxp[1] + dxp[2] * dxp[2]);
             if (dpos < CONV_THRESHOLD) break;
-        } // end Gauss-Newton iterations
-
-        // Compute post-fit residuals for outlier detection
-        if (reweightPass == 0) {
-            obsWeights = computeOutlierWeights(epochs, ambParams, nav, opt, pos,
-                    ambValues, nf, refSatMap);
-        }
-
-        } // end reweighting pass
+        } // end Gauss-Newton iterations (with Huber IRLS built-in)
 
         // Restore outlier threshold
         opt.maxinno[0] = savedMaxinno[0];
@@ -1025,81 +1015,7 @@ public final class BatchSolver {
     }
 
     // ---------------------------------------------------------------
-    // computeOutlierWeights: post-fit residual outlier detection
-    // ---------------------------------------------------------------
-
-    /**
-     * Compute post-fit DD residuals and flag outliers for reweighting.
-     */
-    private static double[][] computeOutlierWeights(
-            List<EpochData> epochs, List<AmbParam> ambParams,
-            Navigation nav, ProcessingOptions opt,
-            double[] pos, double[] ambValues, int nf,
-            int[][] refSatMap) {
-        double[][] weights = new double[epochs.size()][];
-        int outlierCount = 0;
-        int totalObs = 0;
-
-        double[] dr = new double[3];
-        double bl = Rtkpos.baseline(pos, opt.rb, dr);
-
-        for (int ep = 0; ep < epochs.size(); ep++) {
-            EpochData ed = epochs.get(ep);
-            if (ed.ns <= 0) continue;
-
-            // Compute zdres
-            double[] yRov = new double[nf * 2 * ed.nu];
-            double[] eRov = new double[3 * ed.nu];
-            double[] azelRov = new double[2 * ed.nu];
-            double[] freqRov = new double[nf * ed.nu];
-            ObsData[] obsRov = new ObsData[ed.nu];
-            System.arraycopy(ed.obs, 0, obsRov, 0, ed.nu);
-            if (Rtkpos.zdres(0, obsRov, ed.nu, ed.rs, ed.dts, ed.var, ed.svh,
-                              nav, pos, opt, yRov, eRov, azelRov, freqRov) == 0) continue;
-
-            double[] yBase = new double[nf * 2 * ed.nr];
-            double[] eBase = new double[3 * ed.nr];
-            double[] azelBase = new double[2 * ed.nr];
-            double[] freqBase = new double[nf * ed.nr];
-            ObsData[] obsBase = new ObsData[ed.nr];
-            System.arraycopy(ed.obs, ed.nu, obsBase, 0, ed.nr);
-            double[] rsBase = new double[6 * ed.nr];
-            System.arraycopy(ed.rs, ed.nu * 6, rsBase, 0, 6 * ed.nr);
-            double[] dtsBase = new double[2 * ed.nr];
-            System.arraycopy(ed.dts, ed.nu * 2, dtsBase, 0, 2 * ed.nr);
-            double[] varBase = new double[ed.nr];
-            System.arraycopy(ed.var, ed.nu, varBase, 0, ed.nr);
-            int[] svhBase = new int[ed.nr];
-            System.arraycopy(ed.svh, ed.nu, svhBase, 0, ed.nr);
-            if (Rtkpos.zdres(1, obsBase, ed.nr, rsBase, dtsBase, varBase, svhBase,
-                              nav, opt.rb, opt, yBase, eBase, azelBase, freqBase) == 0) continue;
-
-            List<DdObs> ddObs = makeDdObs(ed, pos, opt, nav, nf,
-                    yRov, eRov, azelRov, freqRov,
-                    yBase, azelBase, freqBase,
-                    ambParams, ambValues, ep, bl, refSatMap);
-
-            if (ddObs.isEmpty()) continue;
-
-            weights[ep] = new double[ddObs.size()];
-            for (int i = 0; i < ddObs.size(); i++) {
-                DdObs dd = ddObs.get(i);
-                double sigma = Math.sqrt(Math.max(dd.var, 1e-10));
-                if (Math.abs(dd.v) > 3.0 * sigma) {
-                    weights[ep][i] = 0.0;
-                    outlierCount++;
-                } else {
-                    weights[ep][i] = 1.0;
-                }
-                totalObs++;
-            }
-        }
-
-        return outlierCount > 0 ? weights : null;
-    }
-
-    // ---------------------------------------------------------------
-    // sppPosition: unchanged from original
+    // sppPosition
     // ---------------------------------------------------------------
 
     /**
