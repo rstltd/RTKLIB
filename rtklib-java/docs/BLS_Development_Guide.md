@@ -182,6 +182,39 @@ The most impactful improvement for BLS fix rate is two-step AR:
 2. Use fixed wide-lane to constrain narrow-lane AR — reduces search dimension
 3. This is the standard approach in Bernese/GAMIT and would bring BLS fix rate close to 100%
 
+## Baseline Stability (1Hz, FIX-only, 140 × 10-min windows)
+
+| Metric | BLS | EKF |
+|--------|-----|-----|
+| FIX coverage | 79.3% (111/140) | 98.6% (138/140) |
+| **Horiz stability** | **7.7 mm** | 8.7 mm |
+| Vert stability | 15.7 mm | 13.4 mm |
+| RMS 3D | 17.5 mm | 16.0 mm |
+| Mean bias E/N/U | 0.0 / 0.5 / 0.0 mm | 0.6 / 0.1 / 1.1 mm |
+| Processing speed | **661 ms/window** | 3370 ms/window |
+
+**BLS horizontal stability (7.7mm) surpasses EKF (8.7mm)** — the first clear
+precision advantage. 600 epochs at 1Hz let BLS fully exploit satellite geometry
+changes within each 10-minute window. EKF's sequential approximation accumulates
+linearization error over 600 updates.
+
+### Production deployment strategy (revised)
+
+```
+Routine 10-min processing (30s, 20 epochs):
+  EKF primary (99% fix rate), BLS verification
+  → Grade A/B/C classification with cross-validation
+
+High-precision analysis (1Hz, 600 epochs):
+  BLS primary (7.7mm horiz stability, 5x faster)
+  → Used for anomaly investigation, precise displacement measurement
+
+Future: Decimation + constrained BLS
+  1. 30s subsample → AR (96% fix rate)
+  2. Integer constraint → full 1Hz BLS (600 epochs geometry)
+  → Best of both: high fix rate + sub-cm stability
+```
+
 ## Roadmap
 
 ```
