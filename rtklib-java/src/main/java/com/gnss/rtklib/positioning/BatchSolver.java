@@ -30,7 +30,7 @@ public final class BatchSolver {
 
     private BatchSolver() {}
 
-    private static final int MAX_ITER = 6;
+    private static final int MAX_ITER = 10;
     private static final double CONV_THRESHOLD = 1e-4; // m
 
     /**
@@ -363,7 +363,12 @@ public final class BatchSolver {
             }
 
             double dpos = Math.sqrt(dxp[0] * dxp[0] + dxp[1] * dxp[1] + dxp[2] * dxp[2]);
-            if (dpos < CONV_THRESHOLD) break;
+            // Check both position AND ambiguity convergence
+            double dambMax = 0;
+            for (int j = 0; j < nAmb; j++) {
+                dambMax = Math.max(dambMax, Math.abs(dxa[j]));
+            }
+            if (dpos < CONV_THRESHOLD && dambMax < 0.01) break; // both must converge
         } // end Gauss-Newton iterations (with Huber IRLS built-in)
 
         // Restore outlier threshold
@@ -544,11 +549,31 @@ public final class BatchSolver {
             }
 
             if (ratioWL >= 2.0) {  // WL threshold is low (easy to fix)
-                // WL fixed! Now do NL step.
+                // WL fixed! Apply WL constraint to Qaa before NL step.
+                // Constrained: Qaa_c = Qaa - Qaa*T'*(T*Qaa*T')^{-1}*T*Qaa
+                // where T is the WL differencing matrix [+1(L1), -1(L5)]
+                // T*Qaa*T' = QWL (already computed), need T*Qaa and QWL^{-1}
+                double[] QWLinv = QWL.clone();
+                boolean wlConstraintOk = (MatrixUtil.matinv(QWLinv, nWL) == 0);
 
-                // Step 3: NL fix
-                // NL for dual-freq: N_NL = N_L1 + N_L5 (integer)
-                // For single-freq: just N_L1
+                double[] QaaC = QaaAR.clone(); // constrained Qaa (start from original)
+                if (wlConstraintOk) {
+                    // TQaa[w,a] = Qaa[L1_w, a] - Qaa[L5_w, a] for each WL pair w
+                    double[] TQaa = new double[nWL * nAR];
+                    for (int w = 0; w < nWL; w++) {
+                        int lw = dualPairs.get(w)[0], fw = dualPairs.get(w)[1];
+                        for (int a = 0; a < nAR; a++) {
+                            TQaa[w + a * nWL] = QaaAR[lw + a * nAR] - QaaAR[fw + a * nAR];
+                        }
+                    }
+                    // QWLinv * TQaa (nWL x nAR)
+                    double[] QWLinvTQaa = new double[nWL * nAR];
+                    MatrixUtil.matmul("NN", nWL, nAR, nWL, QWLinv, TQaa, QWLinvTQaa);
+                    // QaaC = Qaa - TQaa' * QWLinv * TQaa
+                    MatrixUtil.matmul("TN", nAR, nAR, nWL, -1.0, TQaa, QWLinvTQaa, 1.0, QaaC);
+                }
+
+                // Step 3: NL fix using WL-constrained covariance
                 int nNL = nWL + singleIdx.size();
                 double[] aNL = new double[nNL];
                 double[] QNL = new double[nNL * nNL];
@@ -562,31 +587,27 @@ public final class BatchSolver {
                     aNL[nWL + i] = aAR[singleIdx.get(i)];  // L1 only
                 }
 
-                // NL covariance
+                // NL covariance from WL-constrained QaaC
                 for (int i = 0; i < nNL; i++) {
                     for (int j = 0; j < nNL; j++) {
                         double cov;
                         if (i < nWL && j < nWL) {
-                            // Both dual-freq: Cov(N_L1_i+N_L5_i, N_L1_j+N_L5_j)
                             int li = dualPairs.get(i)[0], fi = dualPairs.get(i)[1];
                             int lj = dualPairs.get(j)[0], fj = dualPairs.get(j)[1];
-                            cov = QaaAR[li + lj * nAR] + QaaAR[fi + fj * nAR]
-                                + QaaAR[li + fj * nAR] + QaaAR[fi + lj * nAR];
+                            cov = QaaC[li + lj * nAR] + QaaC[fi + fj * nAR]
+                                + QaaC[li + fj * nAR] + QaaC[fi + lj * nAR];
                         } else if (i < nWL) {
-                            // i dual, j single: Cov(N_L1_i+N_L5_i, N_L1_j)
                             int li = dualPairs.get(i)[0], fi = dualPairs.get(i)[1];
                             int sj = singleIdx.get(j - nWL);
-                            cov = QaaAR[li + sj * nAR] + QaaAR[fi + sj * nAR];
+                            cov = QaaC[li + sj * nAR] + QaaC[fi + sj * nAR];
                         } else if (j < nWL) {
-                            // i single, j dual
                             int si = singleIdx.get(i - nWL);
                             int lj = dualPairs.get(j)[0], fj = dualPairs.get(j)[1];
-                            cov = QaaAR[si + lj * nAR] + QaaAR[si + fj * nAR];
+                            cov = QaaC[si + lj * nAR] + QaaC[si + fj * nAR];
                         } else {
-                            // Both single: Cov(N_L1_i, N_L1_j)
                             int si = singleIdx.get(i - nWL);
                             int sj = singleIdx.get(j - nWL);
-                            cov = QaaAR[si + sj * nAR];
+                            cov = QaaC[si + sj * nAR];
                         }
                         QNL[i + j * nNL] = cov;
                     }
