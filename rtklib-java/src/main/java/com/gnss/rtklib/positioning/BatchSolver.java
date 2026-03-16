@@ -594,18 +594,29 @@ public final class BatchSolver {
         qrFix[0] = (float) Qfix[0]; qrFix[1] = (float) Qfix[4]; qrFix[2] = (float) Qfix[8];
         qrFix[3] = (float) Qfix[1]; qrFix[4] = (float) Qfix[5]; qrFix[5] = (float) Qfix[2];
 
+        // Minimum fix count gate: too few fixed ambiguities means weak geometry.
+        // Even if ratio passes, the position constraint from a small subset is
+        // insufficient for reliable cm-level positioning.
+        if (bestNfix < Math.max(8, nAR / 3)) {
+            return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns,
+                    epochs.size(), nAmb, ambValues, ambParams);
+        }
+
         // Post-fix validation: compute DD phase residuals with integer ambiguities.
-        // Wrong fix produces cycle-level residuals; correct fix < 0.05 cycles.
+        // Only check the FIXED subset — unfixed float residuals are near-zero by
+        // definition and would dilute the detection of wrong-fix cycle errors.
         double[] fixedAmb = new double[nAmb];
         System.arraycopy(ambValues, 0, fixedAmb, 0, nAmb);
-        // Apply integer fix to the PAR subset
+        // Build set of fixed ambiguity indices for filtering
+        java.util.Set<Integer> fixedIndices = new java.util.HashSet<>();
         for (int i = 0; i < bestNfix; i++) {
             int fullIdx = arIdx.get(fixedArIdx.get(i));
             fixedAmb[fullIdx] = bestF[i]; // integer value
+            fixedIndices.add(fullIdx);
         }
 
         double postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
-                posFix, fixedAmb, nf, refSatMap);
+                posFix, fixedAmb, nf, refSatMap, fixedIndices);
 
         if (postFixRms > 0.05) {
             // Wrong fix detected: phase residual >> noise level.
@@ -1097,7 +1108,9 @@ public final class BatchSolver {
     }
 
     /**
-     * Compute post-fix DD phase residual RMS (in meters).
+     * Compute post-fix DD phase residual RMS (in meters) for FIXED ambiguities only.
+     * Only includes DD observations whose ambiguity index is in fixedIndices.
+     * This avoids dilution by near-zero float residuals.
      * Correct fix → RMS ≈ 0.005m (noise level).
      * Wrong fix → RMS > 0.05m (cycle-level residuals).
      */
@@ -1105,7 +1118,7 @@ public final class BatchSolver {
             List<EpochData> epochs, List<AmbParam> ambParams,
             Navigation nav, ProcessingOptions opt,
             double[] pos, double[] fixedAmb, int nf,
-            int[][] refSatMap) {
+            int[][] refSatMap, java.util.Set<Integer> fixedIndices) {
         double sumSq = 0;
         int count = 0;
         double[] dr = new double[3];
@@ -1144,7 +1157,8 @@ public final class BatchSolver {
                     ambParams, fixedAmb, ep, bl, refSatMap);
 
             for (DdObs dd : ddObs) {
-                if (dd.isPhase && dd.ddAmbIdx >= 0) {
+                if (dd.isPhase && dd.ddAmbIdx >= 0
+                        && fixedIndices.contains(dd.ddAmbIdx)) {
                     sumSq += dd.v * dd.v;
                     count++;
                 }
