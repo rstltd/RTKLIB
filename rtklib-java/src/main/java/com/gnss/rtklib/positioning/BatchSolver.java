@@ -558,16 +558,7 @@ public final class BatchSolver {
             }
         }
 
-        // Build NaaAR for the fixed subset (from Naa, not Qaa)
-        double[] NaaFix = new double[bestNfix * bestNfix];
-        for (int i = 0; i < bestNfix; i++) {
-            for (int j = 0; j < bestNfix; j++) {
-                NaaFix[i + j * bestNfix] = Naa[arIdx.get(fixedArIdx.get(i))
-                        + arIdx.get(fixedArIdx.get(j)) * nAmb];
-            }
-        }
-
-        // QaaInv for fixed subset
+        // QaaInv for fixed subset (from marginal Qaa, not Naa)
         double[] QaaFixSub = new double[bestNfix * bestNfix];
         for (int i = 0; i < bestNfix; i++) {
             for (int j = 0; j < bestNfix; j++) {
@@ -602,6 +593,26 @@ public final class BatchSolver {
         MatrixUtil.matmul("NT", 3, 3, nFixFinal, -1.0, QpaQaaInv, Qpa_ar, 1.0, Qfix);
         qrFix[0] = (float) Qfix[0]; qrFix[1] = (float) Qfix[4]; qrFix[2] = (float) Qfix[8];
         qrFix[3] = (float) Qfix[1]; qrFix[4] = (float) Qfix[5]; qrFix[5] = (float) Qfix[2];
+
+        // Post-fix validation: compute DD phase residuals with integer ambiguities.
+        // Wrong fix produces cycle-level residuals; correct fix < 0.05 cycles.
+        double[] fixedAmb = new double[nAmb];
+        System.arraycopy(ambValues, 0, fixedAmb, 0, nAmb);
+        // Apply integer fix to the PAR subset
+        for (int i = 0; i < bestNfix; i++) {
+            int fullIdx = arIdx.get(fixedArIdx.get(i));
+            fixedAmb[fullIdx] = bestF[i]; // integer value
+        }
+
+        double postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
+                posFix, fixedAmb, nf, refSatMap);
+
+        if (postFixRms > 0.05) {
+            // Wrong fix detected: phase residual >> noise level.
+            // Fall back to float solution.
+            return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns,
+                    epochs.size(), nAmb, ambValues, ambParams);
+        }
 
         return new BatchResult(posFix, qrFix, SOLQ_FIX, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
     }
@@ -1083,6 +1094,64 @@ public final class BatchSolver {
             }
         }
         return ambValues;
+    }
+
+    /**
+     * Compute post-fix DD phase residual RMS (in meters).
+     * Correct fix → RMS ≈ 0.005m (noise level).
+     * Wrong fix → RMS > 0.05m (cycle-level residuals).
+     */
+    private static double computePostFixPhaseRms(
+            List<EpochData> epochs, List<AmbParam> ambParams,
+            Navigation nav, ProcessingOptions opt,
+            double[] pos, double[] fixedAmb, int nf,
+            int[][] refSatMap) {
+        double sumSq = 0;
+        int count = 0;
+        double[] dr = new double[3];
+        double bl = Rtkpos.baseline(pos, opt.rb, dr);
+
+        for (int ep = 0; ep < epochs.size(); ep++) {
+            EpochData ed = epochs.get(ep);
+            if (ed.ns <= 0) continue;
+
+            double[] yRov = new double[nf * 2 * ed.nu];
+            double[] eRov = new double[3 * ed.nu];
+            double[] azelRov = new double[2 * ed.nu];
+            double[] freqRov = new double[nf * ed.nu];
+            ObsData[] obsRov = new ObsData[ed.nu];
+            System.arraycopy(ed.obs, 0, obsRov, 0, ed.nu);
+            if (Rtkpos.zdres(0, obsRov, ed.nu, ed.rs, ed.dts, ed.var, ed.svh,
+                              nav, pos, opt, yRov, eRov, azelRov, freqRov) == 0) continue;
+
+            ObsData[] obsBase = new ObsData[ed.nr];
+            System.arraycopy(ed.obs, ed.nu, obsBase, 0, ed.nr);
+            double[] rsB = new double[6 * ed.nr]; System.arraycopy(ed.rs, ed.nu * 6, rsB, 0, 6 * ed.nr);
+            double[] dtB = new double[2 * ed.nr]; System.arraycopy(ed.dts, ed.nu * 2, dtB, 0, 2 * ed.nr);
+            double[] vrB = new double[ed.nr]; System.arraycopy(ed.var, ed.nu, vrB, 0, ed.nr);
+            int[] svB = new int[ed.nr]; System.arraycopy(ed.svh, ed.nu, svB, 0, ed.nr);
+            double[] yBase = new double[nf * 2 * ed.nr];
+            double[] eBase = new double[3 * ed.nr];
+            double[] azelBase = new double[2 * ed.nr];
+            double[] freqBase = new double[nf * ed.nr];
+            if (Rtkpos.zdres(1, obsBase, ed.nr, rsB, dtB, vrB, svB,
+                              nav, opt.rb, opt, yBase, eBase, azelBase, freqBase) == 0) continue;
+
+            // Only check phase DD residuals
+            List<DdObs> ddObs = makeDdObs(ed, pos, opt, nav, nf,
+                    yRov, eRov, azelRov, freqRov,
+                    yBase, azelBase, freqBase,
+                    ambParams, fixedAmb, ep, bl, refSatMap);
+
+            for (DdObs dd : ddObs) {
+                if (dd.isPhase && dd.ddAmbIdx >= 0) {
+                    sumSq += dd.v * dd.v;
+                    count++;
+                }
+            }
+        }
+
+        return count > 0 ? Math.sqrt(sumSq / count) : 999.0;
     }
 
     // ---------------------------------------------------------------
