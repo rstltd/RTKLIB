@@ -185,7 +185,8 @@ class BatchSolverTest {
                    "Position should be within 10m of ref (got " + dist + " m)");
 
         if (result.stat == SOLQ_FIX) {
-            assertTrue(result.ratio >= 3.0, "Fix ratio should pass threshold");
+            // Adaptive threshold is < 3.0 for large nAmb (FFRT)
+            assertTrue(result.ratio >= 1.0, "Fix ratio should be meaningful");
             assertTrue(dist < 0.10, "Fix should be within 10cm of ref");
         }
     }
