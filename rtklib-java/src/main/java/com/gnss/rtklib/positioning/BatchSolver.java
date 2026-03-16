@@ -151,6 +151,7 @@ public final class BatchSolver {
 
         // Remove short segments (< 4 epochs): too few observations to
         // reliably constrain a DD ambiguity parameter
+        // Remove short segments (< 4 epochs): insufficient observation constraint
         final int MIN_SEG_LEN = 4;
         ambParams.removeIf(ap -> (ap.endEpoch - ap.startEpoch + 1) < MIN_SEG_LEN);
 
@@ -724,7 +725,8 @@ public final class BatchSolver {
                 }
             }
 
-            // QaaInv for fixed subset
+            // QaaInv for fixed subset (using original marginal Qaa, not WL-constrained,
+            // because tighter constrained covariance makes fix correction overly sensitive)
             double[] QaaFixSub = new double[bestNfix * bestNfix];
             for (int i = 0; i < bestNfix; i++) {
                 for (int j = 0; j < bestNfix; j++) {
@@ -759,7 +761,7 @@ public final class BatchSolver {
                 qrFix[0] = (float) Qfix[0]; qrFix[1] = (float) Qfix[4]; qrFix[2] = (float) Qfix[8];
                 qrFix[3] = (float) Qfix[1]; qrFix[4] = (float) Qfix[5]; qrFix[5] = (float) Qfix[2];
 
-                // Post-fix validation
+                // Post-fix validation with iterative recovery
                 double[] fixedAmb = new double[nAmb];
                 System.arraycopy(ambValues, 0, fixedAmb, 0, nAmb);
                 java.util.Set<Integer> fixedIndices = new java.util.HashSet<>();
@@ -771,6 +773,57 @@ public final class BatchSolver {
 
                 double postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
                         posFix, fixedAmb, nf, refSatMap, fixedIndices);
+
+                // Iterative recovery: remove worst fixed amb until validation passes
+                int MAX_RECOVERY = 5;
+                for (int rec = 0; rec < MAX_RECOVERY && postFixRms > 0.05; rec++) {
+                    int worstFullIdx = findWorstFixedAmb(epochs, ambParams, nav, opt,
+                            posFix, fixedAmb, nf, refSatMap, fixedIndices);
+                    if (worstFullIdx < 0) break;
+
+                    // Revert worst amb to float
+                    fixedAmb[worstFullIdx] = ambValues[worstFullIdx];
+                    fixedIndices.remove(worstFullIdx);
+                    final int wfi = worstFullIdx;
+                    fixedArSubset.removeIf(i -> arIdx.get(i) == wfi);
+
+                    if (fixedArSubset.size() < Math.max(8, nAR / 3)) break;
+
+                    // Recompute fixed solution with reduced subset
+                    bestNfix = fixedArSubset.size();
+                    Qpa_ar = new double[3 * bestNfix];
+                    for (int ii = 0; ii < 3; ii++)
+                        for (int jj = 0; jj < bestNfix; jj++)
+                            Qpa_ar[ii + jj * 3] = Qpa[ii + arIdx.get(fixedArSubset.get(jj)) * 3];
+
+                    QaaFixSub = new double[bestNfix * bestNfix];
+                    for (int ii = 0; ii < bestNfix; ii++)
+                        for (int jj = 0; jj < bestNfix; jj++)
+                            QaaFixSub[ii + jj * bestNfix] = QaaAR[fixedArSubset.get(ii) + fixedArSubset.get(jj) * nAR];
+                    QaaInvFix = new double[bestNfix * bestNfix];
+                    System.arraycopy(QaaFixSub, 0, QaaInvFix, 0, bestNfix * bestNfix);
+                    if (MatrixUtil.matinv(QaaInvFix, bestNfix) != 0) break;
+
+                    da = new double[bestNfix];
+                    for (int ii = 0; ii < bestNfix; ii++)
+                        da[ii] = aAR[fixedArSubset.get(ii)] - fixedOriginal[fixedArSubset.get(ii)];
+                    QaaInvDa = new double[bestNfix];
+                    MatrixUtil.matmul("NN", bestNfix, 1, bestNfix, QaaInvFix, da, QaaInvDa);
+
+                    System.arraycopy(pos, 0, posFix, 0, 3);
+                    MatrixUtil.matmul("NN", 3, 1, bestNfix, -1.0, Qpa_ar, QaaInvDa, 1.0, posFix);
+
+                    // Recompute covariance
+                    QpaQaaInv = new double[3 * bestNfix];
+                    MatrixUtil.matmul("NN", 3, bestNfix, bestNfix, Qpa_ar, QaaInvFix, QpaQaaInv);
+                    System.arraycopy(Qpp, 0, Qfix, 0, 9);
+                    MatrixUtil.matmul("NT", 3, 3, bestNfix, -1.0, QpaQaaInv, Qpa_ar, 1.0, Qfix);
+                    qrFix[0] = (float) Qfix[0]; qrFix[1] = (float) Qfix[4]; qrFix[2] = (float) Qfix[8];
+                    qrFix[3] = (float) Qfix[1]; qrFix[4] = (float) Qfix[5]; qrFix[5] = (float) Qfix[2];
+
+                    postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
+                            posFix, fixedAmb, nf, refSatMap, fixedIndices);
+                }
 
                 if (postFixRms <= 0.05) {
                     return new BatchResult(posFix, qrFix, SOLQ_FIX, ratio, ns,
@@ -1427,6 +1480,71 @@ public final class BatchSolver {
             }
         }
         return ambValues;
+    }
+
+    /**
+     * Find the fixed ambiguity with the largest per-satellite DD phase residual.
+     * Returns the full ambiguity index (into ambParams), or -1 if none found.
+     */
+    private static int findWorstFixedAmb(
+            List<EpochData> epochs, List<AmbParam> ambParams,
+            Navigation nav, ProcessingOptions opt,
+            double[] pos, double[] fixedAmb, int nf,
+            int[][] refSatMap, java.util.Set<Integer> fixedIndices) {
+        // Accumulate per-ambiguity sum of squared residuals
+        double[] ambSumSq = new double[ambParams.size()];
+        int[] ambCount = new int[ambParams.size()];
+
+        double[] dr = new double[3];
+        double bl = Rtkpos.baseline(pos, opt.rb, dr);
+
+        for (int ep = 0; ep < epochs.size(); ep++) {
+            EpochData ed = epochs.get(ep);
+            if (ed.ns <= 0) continue;
+
+            double[] yRov = new double[nf * 2 * ed.nu];
+            double[] eRov = new double[3 * ed.nu];
+            double[] azelRov = new double[2 * ed.nu];
+            double[] freqRov = new double[nf * ed.nu];
+            ObsData[] obsRov = new ObsData[ed.nu];
+            System.arraycopy(ed.obs, 0, obsRov, 0, ed.nu);
+            if (Rtkpos.zdres(0, obsRov, ed.nu, ed.rs, ed.dts, ed.var, ed.svh,
+                              nav, pos, opt, yRov, eRov, azelRov, freqRov) == 0) continue;
+
+            ObsData[] obsBase = new ObsData[ed.nr];
+            System.arraycopy(ed.obs, ed.nu, obsBase, 0, ed.nr);
+            double[] rsB = new double[6*ed.nr]; System.arraycopy(ed.rs, ed.nu*6, rsB, 0, 6*ed.nr);
+            double[] dtB = new double[2*ed.nr]; System.arraycopy(ed.dts, ed.nu*2, dtB, 0, 2*ed.nr);
+            double[] vrB = new double[ed.nr]; System.arraycopy(ed.var, ed.nu, vrB, 0, ed.nr);
+            int[] svB = new int[ed.nr]; System.arraycopy(ed.svh, ed.nu, svB, 0, ed.nr);
+            double[] yBase = new double[nf*2*ed.nr], eBase = new double[3*ed.nr];
+            double[] azelBase = new double[2*ed.nr], freqBase = new double[nf*ed.nr];
+            if (Rtkpos.zdres(1, obsBase, ed.nr, rsB, dtB, vrB, svB,
+                              nav, opt.rb, opt, yBase, eBase, azelBase, freqBase) == 0) continue;
+
+            List<DdObs> ddObs = makeDdObs(ed, pos, opt, nav, nf,
+                    yRov, eRov, azelRov, freqRov,
+                    yBase, azelBase, freqBase,
+                    ambParams, fixedAmb, ep, bl, refSatMap);
+
+            for (DdObs dd : ddObs) {
+                if (dd.isPhase && dd.ddAmbIdx >= 0 && fixedIndices.contains(dd.ddAmbIdx)) {
+                    ambSumSq[dd.ddAmbIdx] += dd.v * dd.v;
+                    ambCount[dd.ddAmbIdx]++;
+                }
+            }
+        }
+
+        // Find worst (highest RMS)
+        int worstIdx = -1;
+        double worstRms = 0;
+        for (int idx : fixedIndices) {
+            if (ambCount[idx] > 0) {
+                double rms = Math.sqrt(ambSumSq[idx] / ambCount[idx]);
+                if (rms > worstRms) { worstRms = rms; worstIdx = idx; }
+            }
+        }
+        return worstIdx;
     }
 
     /**
