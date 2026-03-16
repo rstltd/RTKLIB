@@ -783,9 +783,14 @@ public final class BatchSolver {
                     if (yCdRefRov != 0 && yCdRefBase != 0 && yCdJRov != 0 && yCdJBase != 0) {
                         double ddCode = (yCdRefRov - yCdRefBase) - (yCdJRov - yCdJBase);
 
-                        // Code variance: eratio^2 * phase variance
-                        double eratio = opt.eratio[f % nf];
-                        double varCode = (varRef + varJ) * eratio * eratio;
+                        // Code variance from varerr with f+nf (code index)
+                        double varRefCode = Rtkpos.varerr(refSat, sys, elRef,
+                                ed.obs[iuRef].SNR[f], ed.obs[ed.ir[refIdx]].SNR[f],
+                                bl, 0, f + nf, opt);
+                        double varJCode = Rtkpos.varerr(sat, sys, elJ,
+                                ed.obs[iuJ].SNR[f], ed.obs[ed.ir[j]].SNR[f],
+                                bl, 0, f + nf, opt);
+                        double varCode = varRefCode + varJCode;
 
                         DdObs obs = new DdObs();
                         obs.v = ddCode;
