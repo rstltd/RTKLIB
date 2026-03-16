@@ -62,8 +62,11 @@ class BlsVsEkfTest {
     private static ProcessingOptions createOpt() {
         ProcessingOptions opt = new ProcessingOptions();
         opt.mode = PMODE_STATIC;
-        opt.nf = 3;                  // L1+L2+L5 (L2 empty, L5 at freq[2])
-        opt.navsys = SYS_GPS;
+        opt.nf = 3;                  // L1+L2+L5 (L2 empty for GPS, L5 at freq[2])
+        // GPS + GLO only. GAL excluded because ddres groups GPS+GAL in m=0,
+        // creating cross-system DD with ISB that biases position.
+        // GLO is safe: separate m=1 group, no cross-system DD.
+        opt.navsys = SYS_GPS | SYS_GLO;
         opt.elmin = 15.0 * D2R;
         opt.ionoopt = IONOOPT_BRDC;
         opt.tropopt = TROPOPT_SAAS;

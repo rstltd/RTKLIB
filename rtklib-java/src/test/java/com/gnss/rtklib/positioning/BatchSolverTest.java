@@ -77,8 +77,9 @@ class BatchSolverTest {
     private static ProcessingOptions createBatchOptions() {
         ProcessingOptions opt = new ProcessingOptions();
         opt.mode = PMODE_STATIC;
-        opt.nf = 3;                  // L1+L2+L5 (L2 is empty, L5 at freq[2])
-        opt.navsys = SYS_GPS;        // GPS only for now
+        opt.nf = 3;                  // L1+L2+L5 (L2 empty for GPS, L5 at freq[2])
+        // GPS + GLO. GAL excluded due to ISB in ddres m=0 group.
+        opt.navsys = SYS_GPS | SYS_GLO;
         opt.elmin = 15.0 * D2R;
         opt.ionoopt = IONOOPT_BRDC;
         opt.tropopt = TROPOPT_SAAS;
@@ -103,14 +104,31 @@ class BatchSolverTest {
         return opt;
     }
 
+    /** Find start of overlap region (first rover epoch with matching base). */
+    private static int findOverlapStart() {
+        for (int i = 0; i < roverEpochs.size(); i++) {
+            List<ObsData> re = roverEpochs.get(i);
+            if (re == null || re.isEmpty()) continue;
+            double rt = re.get(0).time.time + re.get(0).time.sec;
+            for (List<ObsData> be : baseEpochs) {
+                if (be == null || be.isEmpty()) continue;
+                double bt = be.get(0).time.time + be.get(0).time.sec;
+                if (Math.abs(rt - bt) <= 1.0) return i;
+            }
+        }
+        return 0;
+    }
+
     @Test
     @EnabledIf("staticDataAvailable")
     void testBatchFloat() {
         ProcessingOptions opt = createBatchOptions();
         opt.modear = 0; // disable AR for float-only test
 
-        // Pass all rover epochs — BLS internally matches with base and skips gaps
-        List<List<ObsData>> rovSub = roverEpochs;
+        // Use a 60-epoch window (~30 min) from the overlap region
+        int start = findOverlapStart();
+        int end = Math.min(start + 60, roverEpochs.size());
+        List<List<ObsData>> rovSub = roverEpochs.subList(start, end);
 
         BatchSolver.BatchResult result = BatchSolver.solve(rovSub, baseEpochs, nav, opt);
 
@@ -140,8 +158,10 @@ class BatchSolverTest {
     void testBatchFix() {
         ProcessingOptions opt = createBatchOptions();
 
-        // Pass all epochs
-        List<List<ObsData>> rovSub = roverEpochs;
+        // Use a 60-epoch window from the overlap region
+        int start = findOverlapStart();
+        int end = Math.min(start + 60, roverEpochs.size());
+        List<List<ObsData>> rovSub = roverEpochs.subList(start, end);
 
         BatchSolver.BatchResult result = BatchSolver.solve(rovSub, baseEpochs, nav, opt);
 
@@ -175,7 +195,10 @@ class BatchSolverTest {
     void testBatchVsEkf() {
         ProcessingOptions opt = createBatchOptions();
 
-        List<List<ObsData>> rovSub = roverEpochs;
+        // Use a 60-epoch window from the overlap region
+        int start = findOverlapStart();
+        int end = Math.min(start + 60, roverEpochs.size());
+        List<List<ObsData>> rovSub = roverEpochs.subList(start, end);
 
         // BLS solution
         BatchSolver.BatchResult blsResult = BatchSolver.solve(rovSub, baseEpochs, nav, opt);

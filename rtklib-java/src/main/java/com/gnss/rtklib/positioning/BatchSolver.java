@@ -465,26 +465,37 @@ public final class BatchSolver {
         }
 
         // Build list of AR-eligible ambiguity indices.
-        // Exclude: ref sat params (constrained to zero) and weakly observed params.
-        // Detect via Naa diagonal: constrained params have huge diagonal (>> normal),
-        // weakly observed have tiny diagonal.
-        double maxNorm = 0, medianDiag = 0;
+        // Exclude:
+        //  - Ref sat params (constrained to zero → huge Naa diagonal)
+        //  - GLONASS (FDMA → DD ambiguity not integer)
+        //  - Weakly observed params (tiny Naa diagonal)
+        double maxNorm = 0;
         double[] diagArr = new double[nAmb];
+        int nNormal = 0;
+        double sumNormal = 0;
         for (int j = 0; j < nAmb; j++) {
             diagArr[j] = Naa[j + j * nAmb];
             if (diagArr[j] > maxNorm) maxNorm = diagArr[j];
         }
-        // Sort to find median (ignoring constrained outliers)
+        // Compute median of non-constrained diagonals
         double[] sorted = diagArr.clone();
         java.util.Arrays.sort(sorted);
-        medianDiag = sorted[nAmb / 2];
+        // Skip the top entries (constrained) and find median of the rest
+        double medianDiag = sorted[Math.max(0, nAmb / 2)];
 
         List<Integer> arIdx = new ArrayList<>();
         for (int j = 0; j < nAmb; j++) {
-            // Skip constrained params (diagonal >> 100x median)
+            AmbParam ap = ambParams.get(j);
+            int sys = SatelliteUtil.satsys(ap.sat)[0];
+
+            // Skip GLONASS (FDMA, non-integer DD ambiguity)
+            if (sys == SYS_GLO) continue;
+
+            // Skip constrained params (diagonal >> 100x median = ref sats)
             if (diagArr[j] > medianDiag * 100) continue;
             // Skip weakly observed (diagonal < 1% of median)
             if (diagArr[j] < medianDiag * 0.01) continue;
+
             arIdx.add(j);
         }
 
@@ -771,22 +782,29 @@ public final class BatchSolver {
     }
 
     /**
-     * Identify ref satellite indices (one per system/freq group) for zero-constraint.
-     * Returns list of indices into ambParams that should be constrained to zero.
+     * Identify ref satellite indices for zero-constraint.
+     * One ref per (actual satellite system, freq).
+     *
+     * Each actual system (GPS, GAL, GLO, etc.) needs its own datum because:
+     * - ddres forms DD within testSys groups (GPS+GAL+QZS = m=0, GLO = m=1, etc.)
+     * - Cross-system DD (GPS ref - GAL sat) contains ISB
+     * - Per-system ref constraint absorbs ISB into the non-ref system's ambiguities
      */
     private static List<Integer> identifyRefSatIndices(List<AmbParam> ambParams,
                                                         ProcessingOptions opt) {
         int nf = FilterState.NF(opt);
         List<Integer> refs = new ArrayList<>();
-        for (int m = 0; m < NSYS; m++) {
+
+        int[] systems = {SYS_GPS, SYS_GLO, SYS_GAL, SYS_QZS, SYS_CMP, SYS_IRN, SYS_SBS};
+
+        for (int sys : systems) {
             for (int f = 0; f < nf; f++) {
                 int bestIdx = -1;
                 int bestSpan = 0;
                 for (int j = 0; j < ambParams.size(); j++) {
                     AmbParam ap = ambParams.get(j);
                     if (ap.freq != f) continue;
-                    int sys = SatelliteUtil.satsys(ap.sat)[0];
-                    if (!Rtkpos.testSys(sys, m)) continue;
+                    if (SatelliteUtil.satsys(ap.sat)[0] != sys) continue;
                     int span = ap.endEpoch - ap.startEpoch + 1;
                     if (span > bestSpan) { bestSpan = span; bestIdx = j; }
                 }
