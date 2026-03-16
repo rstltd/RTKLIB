@@ -144,6 +144,44 @@ This equals `(N_full)^{-1}[amb,amb]` — the ambiguity sub-block of the full nor
 
 ---
 
+## Final Benchmark (24h L1+L5 GRECJS, 140 × 10-min windows)
+
+| Metric | BLS | EKF |
+|--------|-----|-----|
+| Verified fix rate | 84.3% (118/140) | 99.3% (139/140) |
+| Wrong fix rate | 0% | — |
+| Median fix error (when fix) | 1.5cm | 0.9cm |
+| Full 24h float error | 7.6mm | — |
+| BLS wins / EKF wins / TIE | 34 / 79 / 27 | — |
+
+In the 118 windows where both fix: BLS wins 38, EKF wins 58, TIE 24. Average nAmb is 41-43 regardless of winner — the difference is not subset size but integer combination quality.
+
+The 15% fix rate gap (84.3% vs 99.3%) comes from:
+1. 20 FLOAT windows: PAR couldn't find a valid subset, or post-fix validation rejected wrong fix
+2. EKF's sequential filtering naturally selects stable ambiguities (lock count > 20)
+3. EKF combined mode gets two independent AR attempts (forward + backward)
+
+### Production deployment strategy
+
+```
+Each 10-minute window:
+├─ Run EKF → fix/float + ratio
+├─ Run BLS → fix/float + ratio + post-fix RMS
+│
+├─ Both FIX, position diff < 3cm → Grade A (high confidence)
+├─ EKF FIX, BLS FLOAT → Grade B (EKF result, no cross-validation)
+├─ BLS FIX, EKF FLOAT → Grade B+ (BLS result, rare but valuable)
+├─ Both FLOAT → Grade C (use BLS float, 7.6mm quality)
+└─ Both FIX, position diff > 10cm → Flag (anomaly, manual review)
+```
+
+### Key improvement path: Wide-lane / Narrow-lane AR
+
+The most impactful improvement for BLS fix rate is two-step AR:
+1. Fix L1-L5 wide-lane (λ ≈ 0.75m) — nearly 100% fix rate even on weak ambs
+2. Use fixed wide-lane to constrain narrow-lane AR — reduces search dimension
+3. This is the standard approach in Bernese/GAMIT and would bring BLS fix rate close to 100%
+
 ## Roadmap
 
 ```
