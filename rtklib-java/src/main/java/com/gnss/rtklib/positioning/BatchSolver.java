@@ -149,10 +149,10 @@ public final class BatchSolver {
         // 4. Scan DD ambiguities
         List<AmbParam> ambParams = scanDdAmbiguities(epochs, opt, nf, refSatMap);
 
-        // Remove short segments
-        int nTotalEpochs = epochs.size();
-        int minSegLen = Math.max(3, (int)(nTotalEpochs * 0.3));
-        ambParams.removeIf(ap -> (ap.endEpoch - ap.startEpoch + 1) < minSegLen);
+        // Remove short segments (< 4 epochs): too few observations to
+        // reliably constrain a DD ambiguity parameter
+        final int MIN_SEG_LEN = 4;
+        ambParams.removeIf(ap -> (ap.endEpoch - ap.startEpoch + 1) < MIN_SEG_LEN);
 
         int nAmb = ambParams.size();
         int nx = 3 + nAmb;
@@ -446,25 +446,43 @@ public final class BatchSolver {
             return new BatchResult(pos, qr, SOLQ_FLOAT, 0, ns, epochs.size(), nAmb, ambValues, ambParams);
         }
 
-        // Extract AR-eligible sub-block
+        // Compute marginal ambiguity covariance for LAMBDA:
+        // Qaa = NaaInv + NaaInv * Npa^T * Qpp * Npa * NaaInv
+        // This accounts for position uncertainty (unlike plain NaaInv).
+        // Also compute Qpa = -Qpp * Npa * NaaInv for fixed solution.
+        double[] Qpa = new double[3 * nAmb];
+        MatrixUtil.matmul("NN", 3, nAmb, 3, Qpp, tmp3a, Qpa);  // Qpp * (Npa * NaaInv)
+        for (int i = 0; i < 3 * nAmb; i++) Qpa[i] = -Qpa[i];   // Qpa = -Qpp * Npa * NaaInv
+
+        // Qaa = NaaInv + NaaInv * Npa^T * Qpp * Npa * NaaInv
+        //     = NaaInv + (NaaInv * Npa^T) * (-Qpa)^T  [since Qpa = -Qpp*Npa*NaaInv]
+        //     = NaaInv - tmp3a^T * Qpa^T
+        // where tmp3a = Npa * NaaInv (3 x nAmb), so tmp3a^T = NaaInv^T * Npa^T (nAmb x 3)
+        // Actually: Qaa = NaaInv + NaaInv * Nap * Qpp * Npa * NaaInv
+        //   Let U = Npa * NaaInv (3 x nAmb) = tmp3a
+        //   Qaa = NaaInv + U^T * Qpp * U
+        double[] Qaa = new double[nAmb * nAmb];
+        System.arraycopy(NaaInv, 0, Qaa, 0, nAmb * nAmb);
+        // QppU = Qpp * U = Qpp * tmp3a (3 x nAmb)
+        double[] QppU = new double[3 * nAmb];
+        MatrixUtil.matmul("NN", 3, nAmb, 3, Qpp, tmp3a, QppU);
+        // Qaa += U^T * QppU = tmp3a^T * QppU
+        MatrixUtil.matmul("TN", nAmb, nAmb, 3, 1.0, tmp3a, QppU, 1.0, Qaa);
+
+        // Extract AR-eligible sub-blocks
         double[] aAR = new double[nAR];
-        double[] NaaAR = new double[nAR * nAR];
+        double[] QaaAR = new double[nAR * nAR];
         for (int i = 0; i < nAR; i++) {
             aAR[i] = ambValues[arIdx.get(i)];
             for (int j = 0; j < nAR; j++) {
-                NaaAR[i + j * nAR] = Naa[arIdx.get(i) + arIdx.get(j) * nAmb];
+                QaaAR[i + j * nAR] = Qaa[arIdx.get(i) + arIdx.get(j) * nAmb];
             }
         }
 
-        double[] QaAR = new double[nAR * nAR];
-        System.arraycopy(NaaAR, 0, QaAR, 0, nAR * nAR);
-        if (MatrixUtil.matinv(QaAR, nAR) != 0) {
-            return new BatchResult(pos, qr, SOLQ_FLOAT, 0, ns, epochs.size(), nAmb, ambValues, ambParams);
-        }
-
+        // LAMBDA
         double[] F = new double[nAR * 2];
         double[] s = new double[2];
-        int info = Lambda.lambda(nAR, 2, aAR, QaAR, F, s);
+        int info = Lambda.lambda(nAR, 2, aAR, QaaAR, F, s);
 
         float ratio;
         if (info != 0 || s[0] <= 0) {
@@ -479,35 +497,42 @@ public final class BatchSolver {
             return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
         }
 
-        // Apply fixed solution: pos_fix = pos_float - Qpa * Qa^-1 * (a_float - a_fix)
-        double[] Qpa_full = new double[3 * nAmb];
-        MatrixUtil.matmul("NN", 3, nAmb, 3, Qpp, tmp3a, Qpa_full);
-        for (int i = 0; i < 3 * nAmb; i++) Qpa_full[i] = -Qpa_full[i];
-
+        // Fixed solution: dx_fix = -Qpa * Qaa^{-1} * (a_float - a_fix)
+        // Qaa^{-1} = Naa - Npa^T * Npp^{-1} * Npa  (Schur complement of Npp)
+        // For the AR sub-block: compute NaaRed_ar from Naa, Npa, Npp sub-blocks
         double[] Qpa_ar = new double[3 * nAR];
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < nAR; j++) {
-                Qpa_ar[i + j * 3] = Qpa_full[i + arIdx.get(j) * 3];
+                Qpa_ar[i + j * 3] = Qpa[i + arIdx.get(j) * 3];
             }
+        }
+
+        // QaaInv_ar = inverse of QaaAR (marginal covariance)
+        double[] QaaInvAR = new double[nAR * nAR];
+        System.arraycopy(QaaAR, 0, QaaInvAR, 0, nAR * nAR);
+        if (MatrixUtil.matinv(QaaInvAR, nAR) != 0) {
+            return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
         }
 
         double[] da = new double[nAR];
         for (int i = 0; i < nAR; i++) da[i] = aAR[i] - F[i];
 
-        double[] NaaDa = new double[nAR];
-        MatrixUtil.matmul("NN", nAR, 1, nAR, NaaAR, da, NaaDa);
+        // QaaInv * da
+        double[] QaaInvDa = new double[nAR];
+        MatrixUtil.matmul("NN", nAR, 1, nAR, QaaInvAR, da, QaaInvDa);
 
+        // pos_fix = pos_float - Qpa_ar * QaaInv * da
         double[] posFix = new double[3];
         System.arraycopy(pos, 0, posFix, 0, 3);
-        MatrixUtil.matmul("NN", 3, 1, nAR, -1.0, Qpa_ar, NaaDa, 1.0, posFix);
+        MatrixUtil.matmul("NN", 3, 1, nAR, -1.0, Qpa_ar, QaaInvDa, 1.0, posFix);
 
-        // Fixed covariance
+        // Fixed covariance: Qfix = Qpp - Qpa_ar * QaaInv_ar * Qpa_ar^T
         float[] qrFix = new float[6];
-        double[] QpaNaa = new double[3 * nAR];
-        MatrixUtil.matmul("NN", 3, nAR, nAR, Qpa_ar, NaaAR, QpaNaa);
+        double[] QpaQaaInv = new double[3 * nAR];
+        MatrixUtil.matmul("NN", 3, nAR, nAR, Qpa_ar, QaaInvAR, QpaQaaInv);
         double[] Qfix = new double[9];
         System.arraycopy(Qpp, 0, Qfix, 0, 9);
-        MatrixUtil.matmul("NT", 3, 3, nAR, -1.0, QpaNaa, Qpa_ar, 1.0, Qfix);
+        MatrixUtil.matmul("NT", 3, 3, nAR, -1.0, QpaQaaInv, Qpa_ar, 1.0, Qfix);
         qrFix[0] = (float) Qfix[0]; qrFix[1] = (float) Qfix[4]; qrFix[2] = (float) Qfix[8];
         qrFix[3] = (float) Qfix[1]; qrFix[4] = (float) Qfix[5]; qrFix[5] = (float) Qfix[2];
 
@@ -592,10 +617,12 @@ public final class BatchSolver {
                                               ProcessingOptions opt, int nf,
                                               int[][] refSatMap) {
         List<AmbParam> params = new ArrayList<>();
-        // Track active DD pairs: key = (sat, freq), one segment at a time
-        // Using arrays indexed by [sat-1][freq]
         boolean[][] active = new boolean[MAXSAT][NFREQ];
         int[][] currentSegment = new int[MAXSAT][NFREQ];
+        // Previous geometry-free combination per satellite for slip detection
+        // GF = L[0]*c/f0 - L[f]*c/ff (meters), rover SD
+        double[][] prevGf = new double[MAXSAT][NFREQ];
+        boolean[][] hasGf = new boolean[MAXSAT][NFREQ];
 
         for (int ep = 0; ep < epochs.size(); ep++) {
             EpochData ed = epochs.get(ep);
@@ -608,14 +635,38 @@ public final class BatchSolver {
                 int si = sysIndex(sys);
                 if (si < 0) continue;
 
+                // Geometry-free cycle slip detection (L1-Lf for f>0)
+                boolean[] slipDetected = new boolean[NFREQ];
+                if (nf >= 2) {
+                    double L0rov = ed.obs[ed.iu[i]].L[0];
+                    double L0base = ed.obs[ed.ir[i]].L[0];
+                    double f0 = SignalUtil.sat2freq(sat, ed.obs[ed.iu[i]].code[0], null);
+                    if (L0rov != 0 && L0base != 0 && f0 > 0) {
+                        double sdL0 = (L0rov - L0base) * CLIGHT / f0; // SD L1 in meters
+                        for (int f = 1; f < nf; f++) {
+                            double Lfrov = ed.obs[ed.iu[i]].L[f];
+                            double Lfbase = ed.obs[ed.ir[i]].L[f];
+                            double ff = SignalUtil.sat2freq(sat, ed.obs[ed.iu[i]].code[f], null);
+                            if (Lfrov == 0 || Lfbase == 0 || ff <= 0) continue;
+                            double sdLf = (Lfrov - Lfbase) * CLIGHT / ff; // SD Lf in meters
+                            double gf = sdL0 - sdLf; // geometry-free combination
+                            if (hasGf[sat - 1][f] && Math.abs(gf - prevGf[sat - 1][f]) > 0.05) {
+                                // Geometry-free jump > 0.05m → cycle slip on f=0 or f
+                                slipDetected[0] = true;
+                                slipDetected[f] = true;
+                            }
+                            prevGf[sat - 1][f] = gf;
+                            hasGf[sat - 1][f] = true;
+                        }
+                    }
+                }
+
                 for (int f = 0; f < nf; f++) {
                     int refSat = refSatMap[si][f];
-                    if (refSat == 0 || refSat == sat) continue; // skip ref sat itself
+                    if (refSat == 0 || refSat == sat) continue;
 
-                    // Check valid phase on both rover and base for this sat
                     if (ed.obs[ed.iu[i]].L[f] == 0.0 || ed.obs[ed.ir[i]].L[f] == 0.0) continue;
 
-                    // Also check that ref sat has valid phase in this epoch
                     boolean refVisible = false;
                     for (int r = 0; r < ed.ns; r++) {
                         if (ed.sat[r] == refSat) {
@@ -629,7 +680,21 @@ public final class BatchSolver {
 
                     seenThisEpoch[sat - 1][f] = true;
 
-                    if (!active[sat - 1][f]) {
+                    // Start new segment on: first appearance OR cycle slip
+                    boolean needNew = !active[sat - 1][f] || slipDetected[f];
+
+                    if (needNew) {
+                        // End previous segment if active
+                        if (active[sat - 1][f]) {
+                            for (int p = params.size() - 1; p >= 0; p--) {
+                                AmbParam ap = params.get(p);
+                                if (ap.sat == sat && ap.freq == f && ap.endEpoch < 0) {
+                                    ap.endEpoch = ep - 1;
+                                    break;
+                                }
+                            }
+                            currentSegment[sat - 1][f]++;
+                        }
                         // Start new DD segment
                         AmbParam ap = new AmbParam(refSat, sat, f,
                                 currentSegment[sat - 1][f], ep);

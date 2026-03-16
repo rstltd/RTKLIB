@@ -217,9 +217,9 @@ class BlsVsEkfTest {
         System.out.printf("EKF: fixCount=%d/%d, error=%.3f m%n",
                           ekfFix, windowSize, ekfErr);
 
-        // BLS should produce valid solution
-        assertTrue(blsResult.stat >= SOLQ_FLOAT,
-                   "BLS should produce at least float in 10-min window");
+        // BLS should produce valid solution (SOLQ_FIX=1, SOLQ_FLOAT=2 — lower is better)
+        assertTrue(blsResult.stat == SOLQ_FIX || blsResult.stat == SOLQ_FLOAT,
+                   "BLS should produce at least float in 10-min window (got stat=" + blsResult.stat + ")");
         // Note: BLS without SNR mask may have large errors on noisy windows.
         // This test documents current behavior; SNR mask is a future improvement.
         System.out.printf("Note: BLS error %.1f m (no SNR mask yet)%n", blsErr);
