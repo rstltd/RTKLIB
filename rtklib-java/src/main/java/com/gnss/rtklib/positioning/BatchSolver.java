@@ -20,11 +20,11 @@ import static com.gnss.rtklib.core.Constants.*;
  * <p>
  * Solves all epochs simultaneously via normal equations, yielding optimal
  * position and ambiguity estimates without EKF convergence delays.
- * Reuses Rtkpos.zdres/ddres/selsat for observation processing.
+ * Uses double-differenced (DD) parameterization for inherent full-rank
+ * ambiguity states without datum constraints.
  * <p>
- * State vector: [pos(3), amb_1, amb_2, ..., amb_k]
- * where each amb corresponds to a {sat, freq, segment} triple,
- * with segment incremented on cycle slip.
+ * State vector: [pos(3), DD_N_1, DD_N_2, ..., DD_N_n]
+ * where each DD_N corresponds to a {refSat, sat, freq, segment} tuple.
  */
 public final class BatchSolver {
 
@@ -32,20 +32,20 @@ public final class BatchSolver {
 
     private static final int MAX_ITER = 4;
     private static final double CONV_THRESHOLD = 1e-4; // m
-    private static final int NSYS = 6;
 
     /**
-     * Ambiguity parameter descriptor for BLS state vector.
+     * DD ambiguity parameter descriptor for BLS state vector.
      */
     static class AmbParam {
-        final int sat;        // satellite number (1-based)
+        final int refSat;     // reference satellite number (1-based)
+        final int sat;        // non-reference satellite number (1-based)
         final int freq;       // frequency index
-        final int segment;    // segment number (incremented on slip)
+        final int segment;    // segment number (incremented on ref change or gap)
         int startEpoch;       // first epoch of this segment
         int endEpoch;         // last epoch (-1 if ongoing)
-        int blsIndex;         // index in BLS state vector (3 + j)
 
-        AmbParam(int sat, int freq, int segment, int startEpoch) {
+        AmbParam(int refSat, int sat, int freq, int segment, int startEpoch) {
+            this.refSat = refSat;
             this.sat = sat;
             this.freq = freq;
             this.segment = segment;
@@ -65,8 +65,8 @@ public final class BatchSolver {
         public final int ns;             // number of satellites used
         public final int nEpochs;        // number of epochs processed
         public final int nAmb;           // number of ambiguity parameters
-        public final double[] ambValues; // SD float ambiguity values (for diagnostics)
-        public final List<AmbParam> ambParams; // ambiguity parameter descriptors (for diagnostics)
+        public final double[] ambValues; // DD float ambiguity values (for diagnostics)
+        public final List<AmbParam> ambParams; // ambiguity parameter descriptors
 
         BatchResult(double[] pos, float[] qr, int stat, float ratio, int ns,
                     int nEpochs, int nAmb) {
@@ -106,7 +106,19 @@ public final class BatchSolver {
     }
 
     /**
-     * Solve RTK static using Batch Least Squares.
+     * DD observation for one measurement (phase or code).
+     */
+    private static class DdObs {
+        double v;         // DD residual (meters) — phase includes amb correction
+        double[] hPos;    // position partial derivatives [3]
+        double lambda;    // wavelength (meters), 0 for code
+        int ddAmbIdx;     // index into DD ambiguity parameter list (-1 for code)
+        double var;       // DD measurement variance
+        boolean isPhase;  // true for phase, false for code
+    }
+
+    /**
+     * Solve RTK static using Batch Least Squares with DD parameterization.
      *
      * @param roverEpochs rover observation epochs
      * @param baseEpochs  base observation epochs
@@ -129,75 +141,50 @@ public final class BatchSolver {
             return new BatchResult(pos, new float[6], SOLQ_NONE, 0, 0, 0, 0);
         }
 
-        // 3. Build minimal RtkState for ddres calls
-        RtkState rtk = initMinimalState(opt, pos);
+        int nf = FilterState.NF(opt);
 
-        // 4. Pre-scan: build ambiguity parameter table from slip flags
-        List<AmbParam> ambParams = scanAmbiguities(epochs, rtk, nav, opt);
+        // 3. Choose stable ref sat per (system, freq) across all epochs
+        int[][] refSatMap = chooseRefSats(epochs, opt, nf);
 
-        // Remove short segments that cause rank deficiency.
-        // Minimum length scales with total epochs: at least 30% of the window
-        // to ensure sufficient observations per ambiguity parameter.
+        // 4. Scan DD ambiguities
+        List<AmbParam> ambParams = scanDdAmbiguities(epochs, opt, nf, refSatMap);
+
+        // Remove short segments
         int nTotalEpochs = epochs.size();
         int minSegLen = Math.max(3, (int)(nTotalEpochs * 0.3));
         ambParams.removeIf(ap -> (ap.endEpoch - ap.startEpoch + 1) < minSegLen);
-        for (int j = 0; j < ambParams.size(); j++) {
-            ambParams.get(j).blsIndex = 3 + j;
-        }
 
-        // Identify ref sat per system/freq group for zero-constraint.
-        // DD observations only constrain (N_ref - N_j), so we fix one SD bias per
-        // group to zero by adding a tight pseudo-observation.
-        List<Integer> refSatIndices = identifyRefSatIndices(ambParams, opt);
+        int nAmb = ambParams.size();
+        int nx = 3 + nAmb;
 
-        int nx = 3 + ambParams.size();
+        // 5. Initialize DD ambiguity values from DD code-phase differences
+        double[] ambValues = initDdAmbFromZdres(epochs, ambParams, nav, opt, pos, nf);
 
-        // 5. Iterative BLS
+        // Relax outlier threshold for BLS
+        double[] savedMaxinno = {opt.maxinno[0], opt.maxinno[1]};
+        opt.maxinno[0] = 100.0;
+        opt.maxinno[1] = 100.0;
+
+        // Outlier weights
+        double[][] obsWeights = null;
+
         double[] N = null;
         double[] b = null;
 
-        // Initialize ambiguity estimates from zdres code-phase differences
-        // zdres removes geometry (range + trop + sat clock), giving clean bias estimate
-        double[] ambValues = initAmbFromZdres(epochs, ambParams, rtk, nav, opt, pos);
-
-        // Relax outlier threshold for BLS (residuals are larger before convergence)
-        double[] savedMaxinno = {opt.maxinno[0], opt.maxinno[1]};
-        opt.maxinno[0] = 100.0;  // relaxed outlier rejection for BLS
-        opt.maxinno[1] = 100.0;
-
-        // Outlier weights: 1.0 = normal, 0.0 = excluded.
-        // Indexed by [epoch][obs_within_epoch]. Built after first solve pass.
-        double[][] obsWeights = null;
-
-        // Outer loop for iterative reweighting (1 = initial, 2+ = reweight)
+        // Outer loop for iterative reweighting
         for (int reweightPass = 0; reweightPass < 2; reweightPass++) {
 
         for (int iter = 0; iter < MAX_ITER; iter++) {
             N = new double[nx * nx];
             b = new double[nx];
 
-            // Update rtk state with current position estimate
-            System.arraycopy(pos, 0, rtk.x, 0, 3);
-
-            int nf = FilterState.NF(opt);
             int totalObs = 0;
 
             for (int ep = 0; ep < epochs.size(); ep++) {
                 EpochData ed = epochs.get(ep);
                 if (ed.ns <= 0) continue;
 
-                int n = ed.nu + ed.nr;
-
-                // Reset valid satellite flags
-                for (int i = 0; i < MAXSAT; i++) {
-                    for (int j = 0; j < NFREQ; j++) {
-                        rtk.ssat[i].vsat[j] = 0;
-                        rtk.ssat[i].resp[j] = 0;
-                        rtk.ssat[i].resc[j] = 0;
-                    }
-                }
-
-                // Rover zdres
+                // Compute zdres for rover and base
                 double[] yRov = new double[nf * 2 * ed.nu];
                 double[] eRov = new double[3 * ed.nu];
                 double[] azelRov = new double[2 * ed.nu];
@@ -211,7 +198,6 @@ public final class BatchSolver {
                     continue;
                 }
 
-                // Base zdres
                 double[] yBase = new double[nf * 2 * ed.nr];
                 double[] eBase = new double[3 * ed.nr];
                 double[] azelBase = new double[2 * ed.nr];
@@ -233,105 +219,88 @@ public final class BatchSolver {
                     continue;
                 }
 
-                // Assemble full y, e, azel, freq arrays
-                double[] y = new double[nf * 2 * n];
-                double[] e = new double[3 * n];
-                double[] azel = new double[2 * n];
-                double[] freq = new double[nf * n];
+                // Baseline length for varerr
+                double[] dr = new double[3];
+                double bl = Rtkpos.baseline(pos, opt.rb, dr);
 
-                System.arraycopy(yRov, 0, y, 0, nf * 2 * ed.nu);
-                System.arraycopy(yBase, 0, y, ed.nu * nf * 2, nf * 2 * ed.nr);
-                System.arraycopy(eRov, 0, e, 0, 3 * ed.nu);
-                System.arraycopy(eBase, 0, e, ed.nu * 3, 3 * ed.nr);
-                System.arraycopy(azelRov, 0, azel, 0, 2 * ed.nu);
-                System.arraycopy(azelBase, 0, azel, ed.nu * 2, 2 * ed.nr);
-                System.arraycopy(freqRov, 0, freq, 0, nf * ed.nu);
-                System.arraycopy(freqBase, 0, freq, ed.nu * nf, nf * ed.nr);
+                // Form DD observations and accumulate normal equations
+                List<DdObs> ddObs = makeDdObs(ed, pos, opt, nav, nf,
+                        yRov, eRov, azelRov, freqRov,
+                        yBase, azelBase, freqBase,
+                        ambParams, ambValues, ep, bl, refSatMap);
 
-                // Store SNR for varerr
-                for (int i = 0; i < ed.ns; i++) {
-                    for (int j = 0; j < nf; j++) {
-                        rtk.ssat[ed.sat[i] - 1].snr_rover[j] = ed.obs[ed.iu[i]].SNR[j];
-                        rtk.ssat[ed.sat[i] - 1].snr_base[j] = ed.obs[ed.ir[i]].SNR[j];
+                if (ddObs.isEmpty()) continue;
+
+                // Apply outlier weights
+                double[] epWeights = (obsWeights != null && ep < obsWeights.length)
+                        ? obsWeights[ep] : null;
+
+                // Accumulate N += H'WH, b += H'Wv
+                int obsIdx = 0;
+                for (DdObs dd : ddObs) {
+                    double w = 1.0 / dd.var;
+
+                    // Apply outlier weight if available
+                    if (epWeights != null && obsIdx < epWeights.length && epWeights[obsIdx] <= 0) {
+                        obsIdx++;
+                        continue; // skip this observation
                     }
+                    obsIdx++;
+
+                    // b[0:3] += hPos * w * v
+                    for (int k = 0; k < 3; k++) {
+                        b[k] += dd.hPos[k] * w * dd.v;
+                    }
+
+                    // N[pos,pos] += hPos * w * hPos^T
+                    for (int k = 0; k < 3; k++) {
+                        for (int l = k; l < 3; l++) {
+                            double val = dd.hPos[k] * w * dd.hPos[l];
+                            N[k + l * nx] += val;
+                            if (k != l) N[l + k * nx] += val;
+                        }
+                    }
+
+                    if (dd.isPhase && dd.ddAmbIdx >= 0) {
+                        int ai = 3 + dd.ddAmbIdx;
+
+                        // b[amb] += lambda * w * v
+                        b[ai] += dd.lambda * w * dd.v;
+
+                        // N[pos,amb] += hPos * w * lambda
+                        for (int k = 0; k < 3; k++) {
+                            double val = dd.hPos[k] * w * dd.lambda;
+                            N[k + ai * nx] += val;
+                            N[ai + k * nx] += val;
+                        }
+
+                        // N[amb,amb] += lambda * w * lambda
+                        N[ai + ai * nx] += dd.lambda * w * dd.lambda;
+                    }
+
+                    totalObs++;
                 }
-
-                // Set current ambiguity values in rtk.x for ddres
-                setAmbiguityStates(rtk, ambParams, ep, ambValues, iter == 0);
-
-                // ddres: get v, H_ekf, R
-                int ny = ed.ns * nf * 2 + 2;
-                double[] v = new double[ny];
-                double[] Hekf = new double[rtk.nx * ny];
-                double[] R = new double[ny * ny];
-                int[] vflg = new int[ny];
-
-                double dt = ed.obs[0].time.timediff(ed.obs[ed.nu].time);
-
-                // Set solution time for troposphere mapping
-                rtk.sol.time = ed.obs[0].time;
-
-                // Initialize satellite system info
-                for (int i = 0; i < ed.ns; i++) {
-                    rtk.ssat[ed.sat[i] - 1].sys = SatelliteUtil.satsys(ed.sat[i])[0];
-                }
-
-                int nv = Rtkpos.ddres(rtk, ed.obs, dt, rtk.x, null, ed.sat,
-                                       y, e, azel, freq, ed.iu, ed.ir, ed.ns,
-                                       v, Hekf, R, vflg);
-                if (nv <= 0) continue;
-
-                totalObs += nv;
-
-                // Remap H from EKF layout to BLS layout and accumulate normal equations
-                double[] epWeights = (obsWeights != null && ep < obsWeights.length) ?
-                                      obsWeights[ep] : null;
-                accumulateNormal(N, b, Hekf, v, R, nv, rtk.nx, nx, ambParams, ep, opt,
-                                 epWeights);
             }
 
-            // Fix rank deficiency in Naa by:
-            // 1. Zero-constrain ref sat ambiguities (datum definition)
-            // 2. Regularize any remaining near-singular params
+            if (totalObs < nx) {
+                return new BatchResult(pos, new float[6], SOLQ_NONE, 0, 0, epochs.size(), nAmb);
+            }
+
+            // Regularize ambiguities with weak observations
             double maxNaaDiag = 0;
-            for (int j = 0; j < ambParams.size(); j++) {
+            for (int j = 0; j < nAmb; j++) {
                 double d = N[(3 + j) + (3 + j) * nx];
                 if (d > maxNaaDiag) maxNaaDiag = d;
             }
-            double constraintWeight = maxNaaDiag * 1e6;
-
-            // Zero-constrain ALL segments of ref satellites (not just one per freq)
-            for (int refIdx : refSatIndices) {
-                int refSat = ambParams.get(refIdx).sat;
-                int refFreq = ambParams.get(refIdx).freq;
-                for (int j = 0; j < ambParams.size(); j++) {
-                    AmbParam ap = ambParams.get(j);
-                    if (ap.sat == refSat && ap.freq == refFreq) {
-                        int p = 3 + j;
-                        N[p + p * nx] += constraintWeight;
-                        b[p] += constraintWeight * (-ambValues[j]);
-                    }
-                }
-            }
-
-            // Also regularize ambiguities with weak observations (near-zero diagonal)
-            // These are segments that don't overlap well with other sats
             double minDiag = maxNaaDiag * 1e-6;
-            for (int j = 0; j < ambParams.size(); j++) {
+            for (int j = 0; j < nAmb; j++) {
                 int p = 3 + j;
                 if (N[p + p * nx] < minDiag) {
                     N[p + p * nx] += minDiag;
                 }
             }
 
-            if (totalObs < nx) {
-                return new BatchResult(pos, new float[6], SOLQ_NONE, 0, 0, epochs.size(), ambParams.size());
-            }
-
-            // Solve using Schur complement reduction (eliminate ambiguities first)
-            // Partition: N = [Npp Npa; Nap Naa], b = [bp; ba]
-            // where p=position(3), a=ambiguity(nAmb)
-            int nAmb = ambParams.size();
+            // Solve using Schur complement
             double[] Npp = new double[9], Npa = new double[3 * nAmb];
             double[] Naa = new double[nAmb * nAmb];
             double[] bp = new double[3], ba = new double[nAmb];
@@ -348,67 +317,55 @@ public final class BatchSolver {
                 }
             }
 
-            // Reduced normal: Nred = Npp - Npa * Naa^-1 * Nap
             double[] NaaInv = new double[nAmb * nAmb];
             System.arraycopy(Naa, 0, NaaInv, 0, nAmb * nAmb);
             if (MatrixUtil.matinv(NaaInv, nAmb) != 0) {
-                return new BatchResult(pos, new float[6], SOLQ_NONE, 0, 0, epochs.size(), ambParams.size());
+                return new BatchResult(pos, new float[6], SOLQ_NONE, 0, 0, epochs.size(), nAmb);
             }
 
-            // Npa * NaaInv → tmp[3 x nAmb]
             double[] tmp = new double[3 * nAmb];
             MatrixUtil.matmul("NN", 3, nAmb, nAmb, Npa, NaaInv, tmp);
 
-            // Nred = Npp - tmp * Nap (Nap = Npa^T)
             double[] Nred = new double[9];
             System.arraycopy(Npp, 0, Nred, 0, 9);
             MatrixUtil.matmul("NT", 3, 3, nAmb, -1.0, tmp, Npa, 1.0, Nred);
 
-            // bred = bp - tmp * ba
             double[] bred = new double[3];
             System.arraycopy(bp, 0, bred, 0, 3);
             MatrixUtil.matmul("NN", 3, 1, nAmb, -1.0, tmp, ba, 1.0, bred);
 
-            // Solve for position: dxp = Nred^-1 * bred
             double[] NredInv = new double[9];
             System.arraycopy(Nred, 0, NredInv, 0, 9);
             if (MatrixUtil.matinv(NredInv, 3) != 0) {
-                return new BatchResult(pos, new float[6], SOLQ_NONE, 0, 0, epochs.size(), ambParams.size());
+                return new BatchResult(pos, new float[6], SOLQ_NONE, 0, 0, epochs.size(), nAmb);
             }
 
             double[] dxp = new double[3];
             MatrixUtil.matmul("NN", 3, 1, 3, NredInv, bred, dxp);
 
-            // Back-substitute: dxa = NaaInv * (ba - Nap * dxp)
             double[] baRed = new double[nAmb];
             System.arraycopy(ba, 0, baRed, 0, nAmb);
-            // Nap = Npa^T, so Nap * dxp = Npa^T * dxp
             MatrixUtil.matmul("TN", nAmb, 1, 3, -1.0, Npa, dxp, 1.0, baRed);
 
             double[] dxa = new double[nAmb];
             MatrixUtil.matmul("NN", nAmb, 1, nAmb, NaaInv, baRed, dxa);
 
-            // Combine result
-            double[] result = new double[nx];
-            System.arraycopy(dxp, 0, result, 0, 3);
-            System.arraycopy(dxa, 0, result, 3, nAmb);
+            pos[0] += dxp[0];
+            pos[1] += dxp[1];
+            pos[2] += dxp[2];
 
-            // Update both position and ambiguities (one-shot solve)
-            pos[0] += result[0];
-            pos[1] += result[1];
-            pos[2] += result[2];
-
-            for (int j = 0; j < ambParams.size(); j++) {
-                ambValues[j] += result[3 + j];
+            for (int j = 0; j < nAmb; j++) {
+                ambValues[j] += dxa[j];
             }
 
-            double dpos = Math.sqrt(result[0] * result[0] + result[1] * result[1] + result[2] * result[2]);
+            double dpos = Math.sqrt(dxp[0] * dxp[0] + dxp[1] * dxp[1] + dxp[2] * dxp[2]);
             if (dpos < CONV_THRESHOLD) break;
         } // end Gauss-Newton iterations
 
-        // Compute post-fit residuals for outlier detection (reweighting)
+        // Compute post-fit residuals for outlier detection
         if (reweightPass == 0) {
-            obsWeights = computeOutlierWeights(epochs, ambParams, rtk, nav, opt, pos, ambValues, nx);
+            obsWeights = computeOutlierWeights(epochs, ambParams, nav, opt, pos,
+                    ambValues, nf, refSatMap);
         }
 
         } // end reweighting pass
@@ -417,9 +374,7 @@ public final class BatchSolver {
         opt.maxinno[0] = savedMaxinno[0];
         opt.maxinno[1] = savedMaxinno[1];
 
-        // 6. Compute covariances using Schur complement from last iteration's N
-        // Extract blocks from the LAST N matrix
-        int nAmb = ambParams.size();
+        // 6. Compute covariances
         int ns = countSatellites(ambParams);
 
         double[] Npp = new double[9], Npa = new double[3 * nAmb];
@@ -434,14 +389,12 @@ public final class BatchSolver {
             }
         }
 
-        // NaaInv for ambiguity covariance
         double[] NaaInv = new double[nAmb * nAmb];
         System.arraycopy(Naa, 0, NaaInv, 0, nAmb * nAmb);
         if (MatrixUtil.matinv(NaaInv, nAmb) != 0) {
             return new BatchResult(pos, new float[6], SOLQ_FLOAT, 0, ns, epochs.size(), nAmb);
         }
 
-        // Reduced position covariance: Qpp = (Npp - Npa * NaaInv * Nap)^-1
         double[] tmp3a = new double[3 * nAmb];
         MatrixUtil.matmul("NN", 3, nAmb, nAmb, Npa, NaaInv, tmp3a);
         double[] Nred = new double[9];
@@ -458,29 +411,20 @@ public final class BatchSolver {
         qr[0] = (float) Qpp[0]; qr[1] = (float) Qpp[4]; qr[2] = (float) Qpp[8];
         qr[3] = (float) Qpp[1]; qr[4] = (float) Qpp[5]; qr[5] = (float) Qpp[2];
 
-        // 7. LAMBDA AR
-        // Only include well-observed ambiguities (exclude ref sats and regularized params).
+        // 7. LAMBDA AR — DD ambiguities go directly (no extraction needed)
         if (nAmb < 1 || opt.modear == 0) {
             return new BatchResult(pos, qr, SOLQ_FLOAT, 0, ns, epochs.size(), nAmb, ambValues, ambParams);
         }
 
-        // Build list of AR-eligible ambiguity indices.
-        // Exclude:
-        //  - Ref sat params (constrained to zero → huge Naa diagonal)
-        //  - GLONASS (FDMA → DD ambiguity not integer)
-        //  - Weakly observed params (tiny Naa diagonal)
+        // Build AR-eligible list: exclude GLONASS (FDMA) and weakly observed
         double maxNorm = 0;
         double[] diagArr = new double[nAmb];
-        int nNormal = 0;
-        double sumNormal = 0;
         for (int j = 0; j < nAmb; j++) {
             diagArr[j] = Naa[j + j * nAmb];
             if (diagArr[j] > maxNorm) maxNorm = diagArr[j];
         }
-        // Compute median of non-constrained diagonals
         double[] sorted = diagArr.clone();
         java.util.Arrays.sort(sorted);
-        // Skip the top entries (constrained) and find median of the rest
         double medianDiag = sorted[Math.max(0, nAmb / 2)];
 
         List<Integer> arIdx = new ArrayList<>();
@@ -491,10 +435,8 @@ public final class BatchSolver {
             // Skip GLONASS (FDMA, non-integer DD ambiguity)
             if (sys == SYS_GLO) continue;
 
-            // Skip constrained params (diagonal >> 100x median = ref sats)
-            if (diagArr[j] > medianDiag * 100) continue;
             // Skip weakly observed (diagonal < 1% of median)
-            if (diagArr[j] < medianDiag * 0.01) continue;
+            if (medianDiag > 0 && diagArr[j] < medianDiag * 0.01) continue;
 
             arIdx.add(j);
         }
@@ -504,8 +446,7 @@ public final class BatchSolver {
             return new BatchResult(pos, qr, SOLQ_FLOAT, 0, ns, epochs.size(), nAmb, ambValues, ambParams);
         }
 
-        // Extract AR-eligible sub-block from ORIGINAL Naa (before constraint),
-        // then invert to get proper covariance for LAMBDA.
+        // Extract AR-eligible sub-block
         double[] aAR = new double[nAR];
         double[] NaaAR = new double[nAR * nAR];
         for (int i = 0; i < nAR; i++) {
@@ -515,8 +456,6 @@ public final class BatchSolver {
             }
         }
 
-        // Remove constraints from the AR sub-block (they shouldn't be there
-        // since we excluded ref sats, but regularization might remain)
         double[] QaAR = new double[nAR * nAR];
         System.arraycopy(NaaAR, 0, QaAR, 0, nAR * nAR);
         if (MatrixUtil.matinv(QaAR, nAR) != 0) {
@@ -540,9 +479,7 @@ public final class BatchSolver {
             return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
         }
 
-        // Apply fixed solution using AR-eligible subset
-        // pos_fix = pos_float - Qpa_ar * Qa_ar^-1 * (a_float - a_fix)
-        // Qpa_ar: cross-covariance between pos and AR-eligible ambiguities
+        // Apply fixed solution: pos_fix = pos_float - Qpa * Qa^-1 * (a_float - a_fix)
         double[] Qpa_full = new double[3 * nAmb];
         MatrixUtil.matmul("NN", 3, nAmb, 3, Qpp, tmp3a, Qpa_full);
         for (int i = 0; i < 3 * nAmb; i++) Qpa_full[i] = -Qpa_full[i];
@@ -577,6 +514,492 @@ public final class BatchSolver {
         return new BatchResult(posFix, qrFix, SOLQ_FIX, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
     }
 
+    // ---------------------------------------------------------------
+    // chooseRefSats: pick stable ref sat per (system, freq) across all epochs
+    // ---------------------------------------------------------------
+
+    /**
+     * Choose the reference satellite per (system, freq) based on longest
+     * continuous visibility with valid phase. Returns refSatMap[sysIdx][freq]
+     * where sysIdx maps SYS_GPS=0, SYS_GLO=1, SYS_GAL=2, SYS_QZS=3, SYS_CMP=4, SYS_IRN=5, SYS_SBS=6.
+     */
+    private static int[][] chooseRefSats(List<EpochData> epochs,
+                                          ProcessingOptions opt, int nf) {
+        int[] systems = {SYS_GPS, SYS_GLO, SYS_GAL, SYS_QZS, SYS_CMP, SYS_IRN, SYS_SBS};
+        // Count visibility per (sat, freq)
+        int[][] visCount = new int[MAXSAT][NFREQ];
+
+        for (EpochData ed : epochs) {
+            for (int i = 0; i < ed.ns; i++) {
+                int sat = ed.sat[i];
+                for (int f = 0; f < nf; f++) {
+                    if (ed.obs[ed.iu[i]].L[f] != 0.0 && ed.obs[ed.ir[i]].L[f] != 0.0) {
+                        visCount[sat - 1][f]++;
+                    }
+                }
+            }
+        }
+
+        // refSatMap[sysIdx][freq] = sat number (1-based), 0 if none
+        int[][] refSatMap = new int[systems.length][NFREQ];
+
+        for (int si = 0; si < systems.length; si++) {
+            int sys = systems[si];
+            if ((sys & opt.navsys) == 0) continue;
+
+            for (int f = 0; f < nf; f++) {
+                int bestSat = 0;
+                int bestCount = 0;
+                for (int s = 1; s <= MAXSAT; s++) {
+                    if (SatelliteUtil.satsys(s)[0] != sys) continue;
+                    if (visCount[s - 1][f] > bestCount) {
+                        bestCount = visCount[s - 1][f];
+                        bestSat = s;
+                    }
+                }
+                refSatMap[si][f] = bestSat;
+            }
+        }
+
+        return refSatMap;
+    }
+
+    /**
+     * Get system index for refSatMap.
+     */
+    private static int sysIndex(int sys) {
+        switch (sys) {
+            case SYS_GPS: return 0;
+            case SYS_GLO: return 1;
+            case SYS_GAL: return 2;
+            case SYS_QZS: return 3;
+            case SYS_CMP: return 4;
+            case SYS_IRN: return 5;
+            case SYS_SBS: return 6;
+            default: return -1;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // scanDdAmbiguities: build DD ambiguity parameter table
+    // ---------------------------------------------------------------
+
+    /**
+     * Scan epochs and build DD ambiguity parameters. Each parameter represents
+     * a DD pair (refSat - sat) for a given freq, with segment tracking for gaps.
+     */
+    static List<AmbParam> scanDdAmbiguities(List<EpochData> epochs,
+                                              ProcessingOptions opt, int nf,
+                                              int[][] refSatMap) {
+        List<AmbParam> params = new ArrayList<>();
+        // Track active DD pairs: key = (sat, freq), one segment at a time
+        // Using arrays indexed by [sat-1][freq]
+        boolean[][] active = new boolean[MAXSAT][NFREQ];
+        int[][] currentSegment = new int[MAXSAT][NFREQ];
+
+        for (int ep = 0; ep < epochs.size(); ep++) {
+            EpochData ed = epochs.get(ep);
+            boolean[][] seenThisEpoch = new boolean[MAXSAT][NFREQ];
+
+            for (int i = 0; i < ed.ns; i++) {
+                int sat = ed.sat[i];
+                int sys = SatelliteUtil.satsys(sat)[0];
+                if ((sys & opt.navsys) == 0) continue;
+                int si = sysIndex(sys);
+                if (si < 0) continue;
+
+                for (int f = 0; f < nf; f++) {
+                    int refSat = refSatMap[si][f];
+                    if (refSat == 0 || refSat == sat) continue; // skip ref sat itself
+
+                    // Check valid phase on both rover and base for this sat
+                    if (ed.obs[ed.iu[i]].L[f] == 0.0 || ed.obs[ed.ir[i]].L[f] == 0.0) continue;
+
+                    // Also check that ref sat has valid phase in this epoch
+                    boolean refVisible = false;
+                    for (int r = 0; r < ed.ns; r++) {
+                        if (ed.sat[r] == refSat) {
+                            if (ed.obs[ed.iu[r]].L[f] != 0.0 && ed.obs[ed.ir[r]].L[f] != 0.0) {
+                                refVisible = true;
+                            }
+                            break;
+                        }
+                    }
+                    if (!refVisible) continue;
+
+                    seenThisEpoch[sat - 1][f] = true;
+
+                    if (!active[sat - 1][f]) {
+                        // Start new DD segment
+                        AmbParam ap = new AmbParam(refSat, sat, f,
+                                currentSegment[sat - 1][f], ep);
+                        params.add(ap);
+                        active[sat - 1][f] = true;
+                    }
+                }
+            }
+
+            // End segments for sats that disappeared
+            for (int s = 0; s < MAXSAT; s++) {
+                for (int f = 0; f < nf; f++) {
+                    if (active[s][f] && !seenThisEpoch[s][f]) {
+                        for (int p = params.size() - 1; p >= 0; p--) {
+                            AmbParam ap = params.get(p);
+                            if (ap.sat == s + 1 && ap.freq == f && ap.endEpoch < 0) {
+                                ap.endEpoch = ep - 1;
+                                break;
+                            }
+                        }
+                        active[s][f] = false;
+                        currentSegment[s][f]++;
+                    }
+                }
+            }
+        }
+
+        // Close open segments
+        for (AmbParam ap : params) {
+            if (ap.endEpoch < 0) ap.endEpoch = epochs.size() - 1;
+        }
+
+        return params;
+    }
+
+    // ---------------------------------------------------------------
+    // makeDdObs: form DD observations for one epoch
+    // ---------------------------------------------------------------
+
+    /**
+     * For one epoch, produce list of DD observations (phase + code).
+     */
+    private static List<DdObs> makeDdObs(EpochData ed, double[] pos,
+                                          ProcessingOptions opt, Navigation nav, int nf,
+                                          double[] yRov, double[] eRov, double[] azelRov,
+                                          double[] freqRov,
+                                          double[] yBase, double[] azelBase, double[] freqBase,
+                                          List<AmbParam> ambParams, double[] ambValues,
+                                          int epochIdx, double bl,
+                                          int[][] refSatMap) {
+        int[] systems = {SYS_GPS, SYS_GLO, SYS_GAL, SYS_QZS, SYS_CMP, SYS_IRN, SYS_SBS};
+        List<DdObs> result = new ArrayList<>();
+
+        for (int si = 0; si < systems.length; si++) {
+            int sys = systems[si];
+            if ((sys & opt.navsys) == 0) continue;
+
+            for (int f = 0; f < nf; f++) {
+                int refSat = refSatMap[si][f];
+                if (refSat == 0) continue;
+
+                // Find ref sat index in this epoch's common sats
+                int refIdx = -1;
+                for (int i = 0; i < ed.ns; i++) {
+                    if (ed.sat[i] == refSat) { refIdx = i; break; }
+                }
+                if (refIdx < 0) continue;
+
+                int iuRef = ed.iu[refIdx];
+                int irRef = ed.ir[refIdx] - ed.nu;
+
+                // Verify ref sat has valid phase
+                double yPhRefRov = yRov[f + iuRef * nf * 2];
+                double yPhRefBase = yBase[f + irRef * nf * 2];
+                if (yPhRefRov == 0 || yPhRefBase == 0) continue;
+
+                // SNR mask check for ref sat
+                double elRef = azelRov[1 + iuRef * 2];
+                if (elRef < opt.elmin) continue;
+                if (Spp.testsnr(0, f, elRef, ed.obs[iuRef].SNR[f],
+                        opt.snrmask)) continue;
+                if (Spp.testsnr(1, f, azelBase[1 + irRef * 2],
+                        ed.obs[ed.ir[refIdx]].SNR[f], opt.snrmask)) continue;
+
+                // Ref sat variance (for DD variance computation)
+                double varRef = Rtkpos.varerr(refSat, sys, elRef,
+                        ed.obs[iuRef].SNR[f],
+                        ed.obs[ed.ir[refIdx]].SNR[f],
+                        bl, 0, f, opt);
+
+                // DD code zdres for ref sat
+                double yCdRefRov = yRov[f + nf + iuRef * nf * 2];
+                double yCdRefBase = yBase[f + nf + irRef * nf * 2];
+
+                for (int j = 0; j < ed.ns; j++) {
+                    if (j == refIdx) continue;
+                    int sat = ed.sat[j];
+                    if (SatelliteUtil.satsys(sat)[0] != sys) continue;
+
+                    int iuJ = ed.iu[j];
+                    int irJ = ed.ir[j] - ed.nu;
+
+                    // Elevation and SNR check for non-ref sat
+                    double elJ = azelRov[1 + iuJ * 2];
+                    if (elJ < opt.elmin) continue;
+                    if (Spp.testsnr(0, f, elJ, ed.obs[iuJ].SNR[f],
+                            opt.snrmask)) continue;
+                    if (Spp.testsnr(1, f, azelBase[1 + irJ * 2],
+                            ed.obs[ed.ir[j]].SNR[f], opt.snrmask)) continue;
+
+                    // Non-ref sat variance
+                    double varJ = Rtkpos.varerr(sat, sys, elJ,
+                            ed.obs[iuJ].SNR[f],
+                            ed.obs[ed.ir[j]].SNR[f],
+                            bl, 0, f, opt);
+
+                    // Position derivatives: H = -e[ref] + e[j] (same as ddres)
+                    double[] hPos = new double[3];
+                    for (int k = 0; k < 3; k++) {
+                        hPos[k] = -eRov[k + iuRef * 3] + eRov[k + iuJ * 3];
+                    }
+
+                    // Wavelength
+                    double freq = freqRov[f + iuJ * nf];
+                    double lambda = (freq > 0) ? CLIGHT / freq : 0;
+
+                    // Phase DD
+                    double yPhJRov = yRov[f + iuJ * nf * 2];
+                    double yPhJBase = yBase[f + irJ * nf * 2];
+                    if (yPhJRov != 0 && yPhJBase != 0 && lambda > 0) {
+                        double ddPhase = (yPhRefRov - yPhRefBase) - (yPhJRov - yPhJBase);
+
+                        // Find DD ambiguity index
+                        int ddAmbIdx = findDdAmbIdx(ambParams, refSat, sat, f, epochIdx);
+
+                        if (ddAmbIdx >= 0) {
+                            DdObs obs = new DdObs();
+                            obs.v = ddPhase - lambda * ambValues[ddAmbIdx];
+                            obs.hPos = hPos;
+                            obs.lambda = lambda;
+                            obs.ddAmbIdx = ddAmbIdx;
+                            obs.var = varRef + varJ; // DD phase variance (diagonal approx)
+                            obs.isPhase = true;
+                            result.add(obs);
+                        }
+                    }
+
+                    // Code DD
+                    double yCdJRov = yRov[f + nf + iuJ * nf * 2];
+                    double yCdJBase = yBase[f + nf + irJ * nf * 2];
+                    if (yCdRefRov != 0 && yCdRefBase != 0 && yCdJRov != 0 && yCdJBase != 0) {
+                        double ddCode = (yCdRefRov - yCdRefBase) - (yCdJRov - yCdJBase);
+
+                        // Code variance: eratio^2 * phase variance
+                        double eratio = opt.eratio[f % nf];
+                        double varCode = (varRef + varJ) * eratio * eratio;
+
+                        DdObs obs = new DdObs();
+                        obs.v = ddCode;
+                        obs.hPos = hPos;
+                        obs.lambda = 0;
+                        obs.ddAmbIdx = -1;
+                        obs.var = varCode;
+                        obs.isPhase = false;
+                        result.add(obs);
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Find DD ambiguity index for given (refSat, sat, freq) at given epoch.
+     */
+    private static int findDdAmbIdx(List<AmbParam> ambParams, int refSat, int sat,
+                                     int freq, int epochIdx) {
+        for (int i = 0; i < ambParams.size(); i++) {
+            AmbParam ap = ambParams.get(i);
+            if (ap.refSat == refSat && ap.sat == sat && ap.freq == freq
+                && epochIdx >= ap.startEpoch && epochIdx <= ap.endEpoch) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    // ---------------------------------------------------------------
+    // initDdAmbFromZdres: initialize DD ambiguities from DD code-phase
+    // ---------------------------------------------------------------
+
+    /**
+     * Initialize DD ambiguity estimates from DD code-phase differences.
+     * N_DD_init = (dd_phase - dd_code) / lambda (cycles).
+     */
+    private static double[] initDdAmbFromZdres(List<EpochData> epochs,
+                                                List<AmbParam> ambParams,
+                                                Navigation nav, ProcessingOptions opt,
+                                                double[] pos, int nf) {
+        double[] ambValues = new double[ambParams.size()];
+
+        for (int j = 0; j < ambParams.size(); j++) {
+            AmbParam ap = ambParams.get(j);
+            int f = ap.freq;
+            double sumBias = 0;
+            int count = 0;
+
+            int maxEp = Math.min(ap.endEpoch + 1, epochs.size());
+            for (int ep = ap.startEpoch; ep < maxEp; ep++) {
+                EpochData ed = epochs.get(ep);
+
+                // Find ref sat and non-ref sat indices
+                int refIdx = -1, satIdx = -1;
+                for (int i = 0; i < ed.ns; i++) {
+                    if (ed.sat[i] == ap.refSat) refIdx = i;
+                    if (ed.sat[i] == ap.sat) satIdx = i;
+                }
+                if (refIdx < 0 || satIdx < 0) continue;
+
+                // Compute zdres for rover
+                double[] yRov = new double[nf * 2 * ed.nu];
+                double[] eRov = new double[3 * ed.nu];
+                double[] azelRov = new double[2 * ed.nu];
+                double[] freqRov = new double[nf * ed.nu];
+                ObsData[] obsRov = new ObsData[ed.nu];
+                System.arraycopy(ed.obs, 0, obsRov, 0, ed.nu);
+
+                if (Rtkpos.zdres(0, obsRov, ed.nu, ed.rs, ed.dts, ed.var, ed.svh,
+                                  nav, pos, opt, yRov, eRov, azelRov, freqRov) == 0) continue;
+
+                // Compute zdres for base
+                double[] yBase = new double[nf * 2 * ed.nr];
+                double[] eBase = new double[3 * ed.nr];
+                double[] azelBase = new double[2 * ed.nr];
+                double[] freqBase = new double[nf * ed.nr];
+                ObsData[] obsBase = new ObsData[ed.nr];
+                System.arraycopy(ed.obs, ed.nu, obsBase, 0, ed.nr);
+                double[] rsBase = new double[6 * ed.nr];
+                System.arraycopy(ed.rs, ed.nu * 6, rsBase, 0, 6 * ed.nr);
+                double[] dtsBase = new double[2 * ed.nr];
+                System.arraycopy(ed.dts, ed.nu * 2, dtsBase, 0, 2 * ed.nr);
+                double[] varBase = new double[ed.nr];
+                System.arraycopy(ed.var, ed.nu, varBase, 0, ed.nr);
+                int[] svhBase = new int[ed.nr];
+                System.arraycopy(ed.svh, ed.nu, svhBase, 0, ed.nr);
+
+                if (Rtkpos.zdres(1, obsBase, ed.nr, rsBase, dtsBase, varBase, svhBase,
+                                  nav, opt.rb, opt, yBase, eBase, azelBase, freqBase) == 0) continue;
+
+                int iuRef = ed.iu[refIdx], irRef = ed.ir[refIdx] - ed.nu;
+                int iuJ = ed.iu[satIdx], irJ = ed.ir[satIdx] - ed.nu;
+
+                if (iuRef >= ed.nu || irRef < 0 || irRef >= ed.nr) continue;
+                if (iuJ >= ed.nu || irJ < 0 || irJ >= ed.nr) continue;
+
+                // DD phase (meters from zdres)
+                double phRefRov = yRov[f + iuRef * nf * 2];
+                double phRefBase = yBase[f + irRef * nf * 2];
+                double phJRov = yRov[f + iuJ * nf * 2];
+                double phJBase = yBase[f + irJ * nf * 2];
+
+                // DD code (meters from zdres)
+                double cdRefRov = yRov[f + nf + iuRef * nf * 2];
+                double cdRefBase = yBase[f + nf + irRef * nf * 2];
+                double cdJRov = yRov[f + nf + iuJ * nf * 2];
+                double cdJBase = yBase[f + nf + irJ * nf * 2];
+
+                if (phRefRov == 0 || phRefBase == 0 || phJRov == 0 || phJBase == 0) continue;
+                if (cdRefRov == 0 || cdRefBase == 0 || cdJRov == 0 || cdJBase == 0) continue;
+
+                double ddPhase = (phRefRov - phRefBase) - (phJRov - phJBase);
+                double ddCode = (cdRefRov - cdRefBase) - (cdJRov - cdJBase);
+
+                double freq = freqRov[f + iuJ * nf];
+                if (freq <= 0) continue;
+                double lambda = CLIGHT / freq;
+
+                // N_DD = (dd_phase - dd_code) / lambda
+                sumBias += (ddPhase - ddCode) / lambda;
+                count++;
+
+                if (count >= 10) break;
+            }
+
+            if (count > 0) {
+                ambValues[j] = sumBias / count;
+            }
+        }
+        return ambValues;
+    }
+
+    // ---------------------------------------------------------------
+    // computeOutlierWeights: post-fit residual outlier detection
+    // ---------------------------------------------------------------
+
+    /**
+     * Compute post-fit DD residuals and flag outliers for reweighting.
+     */
+    private static double[][] computeOutlierWeights(
+            List<EpochData> epochs, List<AmbParam> ambParams,
+            Navigation nav, ProcessingOptions opt,
+            double[] pos, double[] ambValues, int nf,
+            int[][] refSatMap) {
+        double[][] weights = new double[epochs.size()][];
+        int outlierCount = 0;
+        int totalObs = 0;
+
+        double[] dr = new double[3];
+        double bl = Rtkpos.baseline(pos, opt.rb, dr);
+
+        for (int ep = 0; ep < epochs.size(); ep++) {
+            EpochData ed = epochs.get(ep);
+            if (ed.ns <= 0) continue;
+
+            // Compute zdres
+            double[] yRov = new double[nf * 2 * ed.nu];
+            double[] eRov = new double[3 * ed.nu];
+            double[] azelRov = new double[2 * ed.nu];
+            double[] freqRov = new double[nf * ed.nu];
+            ObsData[] obsRov = new ObsData[ed.nu];
+            System.arraycopy(ed.obs, 0, obsRov, 0, ed.nu);
+            if (Rtkpos.zdres(0, obsRov, ed.nu, ed.rs, ed.dts, ed.var, ed.svh,
+                              nav, pos, opt, yRov, eRov, azelRov, freqRov) == 0) continue;
+
+            double[] yBase = new double[nf * 2 * ed.nr];
+            double[] eBase = new double[3 * ed.nr];
+            double[] azelBase = new double[2 * ed.nr];
+            double[] freqBase = new double[nf * ed.nr];
+            ObsData[] obsBase = new ObsData[ed.nr];
+            System.arraycopy(ed.obs, ed.nu, obsBase, 0, ed.nr);
+            double[] rsBase = new double[6 * ed.nr];
+            System.arraycopy(ed.rs, ed.nu * 6, rsBase, 0, 6 * ed.nr);
+            double[] dtsBase = new double[2 * ed.nr];
+            System.arraycopy(ed.dts, ed.nu * 2, dtsBase, 0, 2 * ed.nr);
+            double[] varBase = new double[ed.nr];
+            System.arraycopy(ed.var, ed.nu, varBase, 0, ed.nr);
+            int[] svhBase = new int[ed.nr];
+            System.arraycopy(ed.svh, ed.nu, svhBase, 0, ed.nr);
+            if (Rtkpos.zdres(1, obsBase, ed.nr, rsBase, dtsBase, varBase, svhBase,
+                              nav, opt.rb, opt, yBase, eBase, azelBase, freqBase) == 0) continue;
+
+            List<DdObs> ddObs = makeDdObs(ed, pos, opt, nav, nf,
+                    yRov, eRov, azelRov, freqRov,
+                    yBase, azelBase, freqBase,
+                    ambParams, ambValues, ep, bl, refSatMap);
+
+            if (ddObs.isEmpty()) continue;
+
+            weights[ep] = new double[ddObs.size()];
+            for (int i = 0; i < ddObs.size(); i++) {
+                DdObs dd = ddObs.get(i);
+                double sigma = Math.sqrt(Math.max(dd.var, 1e-10));
+                if (Math.abs(dd.v) > 3.0 * sigma) {
+                    weights[ep][i] = 0.0;
+                    outlierCount++;
+                } else {
+                    weights[ep][i] = 1.0;
+                }
+                totalObs++;
+            }
+        }
+
+        return outlierCount > 0 ? weights : null;
+    }
+
+    // ---------------------------------------------------------------
+    // sppPosition: unchanged from original
+    // ---------------------------------------------------------------
+
     /**
      * Get initial position from SPP on the first epoch with valid data.
      */
@@ -597,6 +1020,10 @@ public final class BatchSolver {
         }
         return null;
     }
+
+    // ---------------------------------------------------------------
+    // preprocessEpochs: unchanged from original
+    // ---------------------------------------------------------------
 
     /**
      * Preprocess all epochs: match rover/base, compute satellite positions.
@@ -696,513 +1123,32 @@ public final class BatchSolver {
         return result;
     }
 
+    // ---------------------------------------------------------------
+    // scanAmbiguities: kept for backward compatibility with tests
+    // ---------------------------------------------------------------
+
     /**
-     * Scan all epochs for cycle slips and build the ambiguity parameter table.
-     * Uses RINEX LLI flags for slip detection.
+     * Scan all epochs for cycle slips and build ambiguity parameter table.
+     * Kept for backward compatibility. Returns SD-style params.
      */
     static List<AmbParam> scanAmbiguities(List<EpochData> epochs, RtkState rtk,
                                             Navigation nav, ProcessingOptions opt) {
         int nf = FilterState.NF(opt);
-        List<AmbParam> params = new ArrayList<>();
-        // Track current segment per (sat, freq)
-        int[][] currentSegment = new int[MAXSAT][NFREQ];
-        boolean[][] active = new boolean[MAXSAT][NFREQ];
-
-        for (int ep = 0; ep < epochs.size(); ep++) {
-            EpochData ed = epochs.get(ep);
-
-            // Mark all as inactive for this epoch
-            boolean[][] seenThisEpoch = new boolean[MAXSAT][NFREQ];
-
-            for (int i = 0; i < ed.ns; i++) {
-                int sat = ed.sat[i];
-                int satIdx = sat - 1;
-
-                // Filter by navigation system
-                int sys = SatelliteUtil.satsys(sat)[0];
-                if ((sys & opt.navsys) == 0) continue;
-
-                for (int f = 0; f < nf; f++) {
-                    // Check for carrier phase availability
-                    if (ed.obs[ed.iu[i]].L[f] == 0.0 || ed.obs[ed.ir[i]].L[f] == 0.0) {
-                        continue;
-                    }
-
-                    seenThisEpoch[satIdx][f] = true;
-
-                    // Only create new segment on data gap (satellite reappears after
-                    // being absent). LLI flags are ignored because u-blox receivers
-                    // often set them spuriously; BLS relies on having continuous
-                    // segments and can detect true slips through post-fit residuals.
-                    if (!active[satIdx][f]) {
-                        // End previous segment if active
-                        if (active[satIdx][f]) {
-                            for (int p = params.size() - 1; p >= 0; p--) {
-                                AmbParam ap = params.get(p);
-                                if (ap.sat == sat && ap.freq == f && ap.endEpoch < 0) {
-                                    ap.endEpoch = ep - 1;
-                                    break;
-                                }
-                            }
-                            currentSegment[satIdx][f]++;
-                        }
-
-                        // Start new segment
-                        AmbParam ap = new AmbParam(sat, f, currentSegment[satIdx][f], ep);
-                        ap.blsIndex = 3 + params.size();
-                        params.add(ap);
-                        active[satIdx][f] = true;
-                    }
-                }
-            }
-
-            // End segments for satellites that disappeared
-            for (int s = 0; s < MAXSAT; s++) {
-                for (int f = 0; f < nf; f++) {
-                    if (active[s][f] && !seenThisEpoch[s][f]) {
-                        for (int p = params.size() - 1; p >= 0; p--) {
-                            AmbParam ap = params.get(p);
-                            if (ap.sat == s + 1 && ap.freq == f && ap.endEpoch < 0) {
-                                ap.endEpoch = ep - 1;
-                                break;
-                            }
-                        }
-                        active[s][f] = false;
-                    }
-                }
-            }
-        }
-
-        // Close any still-open segments
-        for (AmbParam ap : params) {
-            if (ap.endEpoch < 0) ap.endEpoch = epochs.size() - 1;
-        }
-
-        return params;
+        // Delegate to DD scan with dummy ref sats
+        int[][] refSatMap = chooseRefSats(epochs, opt, nf);
+        return scanDdAmbiguities(epochs, opt, nf, refSatMap);
     }
 
     /**
-     * Identify ref satellite indices for zero-constraint.
-     * One ref per (actual satellite system, freq).
-     *
-     * Each actual system (GPS, GAL, GLO, etc.) needs its own datum because:
-     * - ddres forms DD within testSys groups (GPS+GAL+QZS = m=0, GLO = m=1, etc.)
-     * - Cross-system DD (GPS ref - GAL sat) contains ISB
-     * - Per-system ref constraint absorbs ISB into the non-ref system's ambiguities
-     */
-    private static List<Integer> identifyRefSatIndices(List<AmbParam> ambParams,
-                                                        ProcessingOptions opt) {
-        int nf = FilterState.NF(opt);
-        List<Integer> refs = new ArrayList<>();
-
-        int[] systems = {SYS_GPS, SYS_GLO, SYS_GAL, SYS_QZS, SYS_CMP, SYS_IRN, SYS_SBS};
-
-        for (int sys : systems) {
-            for (int f = 0; f < nf; f++) {
-                int bestIdx = -1;
-                int bestSpan = 0;
-                for (int j = 0; j < ambParams.size(); j++) {
-                    AmbParam ap = ambParams.get(j);
-                    if (ap.freq != f) continue;
-                    if (SatelliteUtil.satsys(ap.sat)[0] != sys) continue;
-                    int span = ap.endEpoch - ap.startEpoch + 1;
-                    if (span > bestSpan) { bestSpan = span; bestIdx = j; }
-                }
-                if (bestIdx >= 0) refs.add(bestIdx);
-            }
-        }
-        return refs;
-    }
-
-    /**
-     * Initialize a minimal RtkState for use with ddres.
-     */
-    private static RtkState initMinimalState(ProcessingOptions opt, double[] pos) {
-        RtkState rtk = new RtkState();
-        rtk.init(opt);
-        System.arraycopy(pos, 0, rtk.x, 0, 3);
-        System.arraycopy(opt.rb, 0, rtk.rb, 0, 3);
-        // Initialize satellite system info (same as relpos)
-        for (int i = 0; i < MAXSAT; i++) {
-            rtk.ssat[i].sys = SatelliteUtil.satsys(i + 1)[0];
-        }
-        return rtk;
-    }
-
-    /**
-     * Set ambiguity states in the RtkState for ddres to use.
-     * Maps BLS ambiguity parameters to EKF IB() indices.
-     */
-    private static void setAmbiguityStates(RtkState rtk, List<AmbParam> ambParams,
-                                            int epoch, double[] ambValues,
-                                            boolean firstIter) {
-        // Clear all ambiguity states
-        int na = rtk.na;
-        for (int i = na; i < rtk.nx; i++) {
-            rtk.x[i] = 0.0;
-        }
-
-        // Set ambiguities for parameters active at this epoch
-        for (AmbParam ap : ambParams) {
-            if (epoch >= ap.startEpoch && epoch <= ap.endEpoch) {
-                int ekfIdx = RtkState.IB(ap.sat, ap.freq, rtk.opt);
-                if (ekfIdx < rtk.nx) {
-                    if (ambValues != null) {
-                        rtk.x[ekfIdx] = ambValues[ap.blsIndex - 3];
-                    }
-                    // Set non-zero to indicate active (ddres checks for x[IB]!=0)
-                    if (rtk.x[ekfIdx] == 0.0 && !firstIter) {
-                        rtk.x[ekfIdx] = 1e-10; // tiny non-zero to keep ddres happy
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Compute post-fit residuals and return observation weights for reweighting.
-     * Observations with |v| > 3*sqrt(R[i,i]) get weight 0 (excluded).
-     * Returns double[nEpochs][nv_per_epoch] or null if no outliers found.
-     */
-    private static double[][] computeOutlierWeights(
-            List<EpochData> epochs, List<AmbParam> ambParams,
-            RtkState rtk, Navigation nav, ProcessingOptions opt,
-            double[] pos, double[] ambValues, int nx) {
-        int nf = FilterState.NF(opt);
-        double[][] weights = new double[epochs.size()][];
-        int outlierCount = 0;
-        int totalObs = 0;
-
-        System.arraycopy(pos, 0, rtk.x, 0, 3);
-
-        for (int ep = 0; ep < epochs.size(); ep++) {
-            EpochData ed = epochs.get(ep);
-            if (ed.ns <= 0) continue;
-            int n = ed.nu + ed.nr;
-
-            // Reset ssat
-            for (int i = 0; i < MAXSAT; i++) {
-                for (int j = 0; j < NFREQ; j++) {
-                    rtk.ssat[i].vsat[j] = 0;
-                    rtk.ssat[i].resp[j] = 0;
-                    rtk.ssat[i].resc[j] = 0;
-                }
-            }
-
-            // Compute zdres at converged position
-            double[] yRov = new double[nf * 2 * ed.nu];
-            double[] eRov = new double[3 * ed.nu];
-            double[] azelRov = new double[2 * ed.nu];
-            double[] freqRov = new double[nf * ed.nu];
-            ObsData[] obsRov = new ObsData[ed.nu];
-            System.arraycopy(ed.obs, 0, obsRov, 0, ed.nu);
-            if (Rtkpos.zdres(0, obsRov, ed.nu, ed.rs, ed.dts, ed.var, ed.svh,
-                              nav, pos, opt, yRov, eRov, azelRov, freqRov) == 0) continue;
-
-            ObsData[] obsBase = new ObsData[ed.nr];
-            System.arraycopy(ed.obs, ed.nu, obsBase, 0, ed.nr);
-            double[] rsBase = new double[6 * ed.nr]; System.arraycopy(ed.rs, ed.nu * 6, rsBase, 0, 6 * ed.nr);
-            double[] dtsBase = new double[2 * ed.nr]; System.arraycopy(ed.dts, ed.nu * 2, dtsBase, 0, 2 * ed.nr);
-            double[] varBase = new double[ed.nr]; System.arraycopy(ed.var, ed.nu, varBase, 0, ed.nr);
-            int[] svhBase = new int[ed.nr]; System.arraycopy(ed.svh, ed.nu, svhBase, 0, ed.nr);
-            double[] yBase = new double[nf * 2 * ed.nr];
-            double[] eBase = new double[3 * ed.nr]; double[] azelBase = new double[2 * ed.nr];
-            double[] freqBase = new double[nf * ed.nr];
-            if (Rtkpos.zdres(1, obsBase, ed.nr, rsBase, dtsBase, varBase, svhBase,
-                              nav, opt.rb, opt, yBase, eBase, azelBase, freqBase) == 0) continue;
-
-            double[] y = new double[nf * 2 * n], e = new double[3 * n];
-            double[] azel = new double[2 * n], freq = new double[nf * n];
-            System.arraycopy(yRov, 0, y, 0, nf * 2 * ed.nu);
-            System.arraycopy(yBase, 0, y, ed.nu * nf * 2, nf * 2 * ed.nr);
-            System.arraycopy(eRov, 0, e, 0, 3 * ed.nu); System.arraycopy(eBase, 0, e, ed.nu * 3, 3 * ed.nr);
-            System.arraycopy(azelRov, 0, azel, 0, 2 * ed.nu); System.arraycopy(azelBase, 0, azel, ed.nu * 2, 2 * ed.nr);
-            System.arraycopy(freqRov, 0, freq, 0, nf * ed.nu); System.arraycopy(freqBase, 0, freq, ed.nu * nf, nf * ed.nr);
-
-            for (int i = 0; i < ed.ns; i++) {
-                for (int j = 0; j < nf; j++) {
-                    rtk.ssat[ed.sat[i] - 1].snr_rover[j] = ed.obs[ed.iu[i]].SNR[j];
-                    rtk.ssat[ed.sat[i] - 1].snr_base[j] = ed.obs[ed.ir[i]].SNR[j];
-                }
-                rtk.ssat[ed.sat[i] - 1].sys = SatelliteUtil.satsys(ed.sat[i])[0];
-            }
-            setAmbiguityStates(rtk, ambParams, ep, ambValues, false);
-            rtk.sol.time = ed.obs[0].time;
-
-            int ny = ed.ns * nf * 2 + 2;
-            double[] v = new double[ny];
-            double[] R = new double[ny * ny];
-            int[] vflg = new int[ny];
-            double dt = ed.obs[0].time.timediff(ed.obs[ed.nu].time);
-            int nv = Rtkpos.ddres(rtk, ed.obs, dt, rtk.x, null, ed.sat,
-                                   y, e, azel, freq, ed.iu, ed.ir, ed.ns,
-                                   v, null, R, vflg);
-            if (nv <= 0) continue;
-
-            // Flag outliers: |v| > 3 * sqrt(R[i,i])
-            weights[ep] = new double[nv];
-            for (int i = 0; i < nv; i++) {
-                double sigma = Math.sqrt(Math.max(R[i + i * nv], 1e-10));
-                if (Math.abs(v[i]) > 3.0 * sigma) {
-                    weights[ep][i] = 0.0; // exclude
-                    outlierCount++;
-                } else {
-                    weights[ep][i] = 1.0; // keep
-                }
-                totalObs++;
-            }
-        }
-
-        return outlierCount > 0 ? weights : null;
-    }
-
-    /**
-     * Remap H from EKF layout to BLS layout and accumulate into normal equations.
-     * N += H_bls' * R^-1 * H_bls
-     * b += H_bls' * R^-1 * v
-     */
-    private static void accumulateNormal(double[] N, double[] bvec,
-                                          double[] Hekf, double[] v, double[] R,
-                                          int nv, int nxEkf, int nxBls,
-                                          List<AmbParam> ambParams, int epoch,
-                                          ProcessingOptions opt,
-                                          double[] obsWeights) {
-        // Build H_bls [nxBls x nv] from H_ekf [nxEkf x nv]
-        // H_ekf is stored column-major: H_ekf[k + i*nxEkf] = dv[i]/dx[k]
-        double[] Hbls = new double[nxBls * nv];
-
-        for (int i = 0; i < nv; i++) {
-            // Position: direct copy
-            for (int k = 0; k < 3; k++) {
-                Hbls[k + i * nxBls] = Hekf[k + i * nxEkf];
-            }
-
-            // Ambiguities: remap from EKF IB(sat,f) to BLS index
-            for (AmbParam ap : ambParams) {
-                if (epoch >= ap.startEpoch && epoch <= ap.endEpoch) {
-                    int ekfIdx = RtkState.IB(ap.sat, ap.freq, opt);
-                    if (ekfIdx < nxEkf) {
-                        Hbls[ap.blsIndex + i * nxBls] = Hekf[ekfIdx + i * nxEkf];
-                    }
-                }
-            }
-        }
-
-        // Apply observation weights (for iterative reweighting / outlier exclusion)
-        if (obsWeights != null) {
-            for (int i = 0; i < nv; i++) {
-                double w = (i < obsWeights.length) ? obsWeights[i] : 1.0;
-                if (w <= 0) {
-                    // Zero out this observation's contribution
-                    v[i] = 0;
-                    for (int k = 0; k < nxBls; k++) Hbls[k + i * nxBls] = 0;
-                    for (int j = 0; j < nv; j++) { R[i + j * nv] = 0; R[j + i * nv] = 0; }
-                    R[i + i * nv] = 1.0; // prevent singular R
-                }
-            }
-        }
-
-        // Full R^-1 (DD covariance is block-diagonal, NOT diagonal)
-        double[] Rinv = new double[nv * nv];
-        System.arraycopy(R, 0, Rinv, 0, nv * nv);
-        if (MatrixUtil.matinv(Rinv, nv) != 0) {
-            return; // skip this epoch if R is singular
-        }
-
-        // Compute W*J (nv × nxBls) and W*v (nv × 1) using full R^-1
-        // J[i,p] = Hbls[p + i*nxBls]
-        // (W*J)[i,p] = sum_k Rinv[i,k] * J[k,p]
-        // N += J^T * W * J, b += J^T * W * v
-
-        // Wv = Rinv * v
-        double[] Wv = new double[nv];
-        for (int i = 0; i < nv; i++) {
-            for (int k = 0; k < nv; k++) {
-                Wv[i] += Rinv[i + k * nv] * v[k];
-            }
-        }
-
-        // b += J^T * Wv = sum_i J[i,p] * Wv[i]
-        for (int i = 0; i < nv; i++) {
-            for (int p = 0; p < nxBls; p++) {
-                bvec[p] += Hbls[p + i * nxBls] * Wv[i];
-            }
-        }
-
-        // WJ = Rinv * J (nv × nxBls)
-        double[] WJ = new double[nv * nxBls];
-        for (int i = 0; i < nv; i++) {
-            for (int p = 0; p < nxBls; p++) {
-                double sum = 0;
-                for (int k = 0; k < nv; k++) {
-                    sum += Rinv[i + k * nv] * Hbls[p + k * nxBls];
-                }
-                WJ[p + i * nxBls] = sum; // same storage as J
-            }
-        }
-
-        // N += J^T * WJ
-        for (int i = 0; i < nv; i++) {
-            for (int p = 0; p < nxBls; p++) {
-                double Jip = Hbls[p + i * nxBls];
-                if (Jip == 0) continue;
-                for (int q = p; q < nxBls; q++) {
-                    double val = Jip * WJ[q + i * nxBls];
-                    N[p + q * nxBls] += val;
-                    if (p != q) N[q + p * nxBls] += val;
-                }
-            }
-        }
-    }
-
-    /**
-     * Initialize SD ambiguity estimates from zdres code-phase differences.
-     * zdres removes geometry (range + tropo + sat clock), so the code-phase
-     * difference directly gives the SD phase bias with minimal geometric bias.
+     * Initialize DD ambiguity estimates from zdres.
+     * Kept for backward compatibility with tests.
      */
     static double[] initAmbFromZdres(List<EpochData> epochs,
                                               List<AmbParam> ambParams,
                                               RtkState rtk, Navigation nav,
                                               ProcessingOptions opt, double[] pos) {
         int nf = FilterState.NF(opt);
-        double[] ambValues = new double[ambParams.size()];
-
-        for (int j = 0; j < ambParams.size(); j++) {
-            AmbParam ap = ambParams.get(j);
-            int f = ap.freq;
-            double sumBias = 0;
-            int count = 0;
-
-            int maxEp = Math.min(ap.endEpoch + 1, epochs.size());
-            for (int ep = ap.startEpoch; ep < maxEp; ep++) {
-                EpochData ed = epochs.get(ep);
-
-                int satIdx = -1;
-                for (int i = 0; i < ed.ns; i++) {
-                    if (ed.sat[i] == ap.sat) { satIdx = i; break; }
-                }
-                if (satIdx < 0) continue;
-
-                int n = ed.nu + ed.nr;
-
-                // Compute zdres for rover
-                double[] yRov = new double[nf * 2 * ed.nu];
-                double[] eRov = new double[3 * ed.nu];
-                double[] azelRov = new double[2 * ed.nu];
-                double[] freqRov = new double[nf * ed.nu];
-                ObsData[] obsRov = new ObsData[ed.nu];
-                System.arraycopy(ed.obs, 0, obsRov, 0, ed.nu);
-
-                if (Rtkpos.zdres(0, obsRov, ed.nu, ed.rs, ed.dts, ed.var, ed.svh,
-                                  nav, pos, opt, yRov, eRov, azelRov, freqRov) == 0) continue;
-
-                // Compute zdres for base
-                double[] yBase = new double[nf * 2 * ed.nr];
-                double[] eBase = new double[3 * ed.nr];
-                double[] azelBase = new double[2 * ed.nr];
-                double[] freqBase = new double[nf * ed.nr];
-                ObsData[] obsBase = new ObsData[ed.nr];
-                System.arraycopy(ed.obs, ed.nu, obsBase, 0, ed.nr);
-                double[] rsBase = new double[6 * ed.nr];
-                System.arraycopy(ed.rs, ed.nu * 6, rsBase, 0, 6 * ed.nr);
-                double[] dtsBase = new double[2 * ed.nr];
-                System.arraycopy(ed.dts, ed.nu * 2, dtsBase, 0, 2 * ed.nr);
-                double[] varBase = new double[ed.nr];
-                System.arraycopy(ed.var, ed.nu, varBase, 0, ed.nr);
-                int[] svhBase = new int[ed.nr];
-                System.arraycopy(ed.svh, ed.nu, svhBase, 0, ed.nr);
-
-                if (Rtkpos.zdres(1, obsBase, ed.nr, rsBase, dtsBase, varBase, svhBase,
-                                  nav, opt.rb, opt, yBase, eBase, azelBase, freqBase) == 0) continue;
-
-                int iu = ed.iu[satIdx], ir = ed.ir[satIdx] - ed.nu;
-                if (iu >= ed.nu || ir < 0 || ir >= ed.nr) continue;
-
-                // SD zdres: phase and code
-                double yPhaseRov = yRov[f + iu * nf * 2];
-                double yPhaseBase = yBase[f + ir * nf * 2];
-                double yCodeRov = yRov[f + nf + iu * nf * 2];
-                double yCodeBase = yBase[f + nf + ir * nf * 2];
-
-                if (yPhaseRov == 0 || yPhaseBase == 0 || yCodeRov == 0 || yCodeBase == 0) continue;
-
-                double sdPhase = yPhaseRov - yPhaseBase; // meters
-                double sdCode = yCodeRov - yCodeBase;     // meters
-
-                double freq = freqRov[f + iu * nf];
-                if (freq <= 0) continue;
-
-                // bias = (sd_phase - sd_code) * freq / CLIGHT (cycles)
-                // sd_phase(m) = lambda * N_sd + noise → sd_phase(m) / lambda = N_sd + noise
-                sumBias += (sdPhase - sdCode) * freq / CLIGHT;
-                count++;
-
-                // Only need a few epochs for averaging
-                if (count >= 10) break;
-            }
-
-            if (count > 0) {
-                ambValues[j] = sumBias / count;
-            }
-        }
-        return ambValues;
-    }
-
-    /**
-     * Initialize SD ambiguity estimates from code-phase differences.
-     * Uses averaging over multiple epochs for noise reduction.
-     * SD phase bias ≈ (SD_phase - SD_code) * freq / CLIGHT (in cycles).
-     */
-    private static double[] initAmbiguities(List<EpochData> epochs,
-                                             List<AmbParam> ambParams,
-                                             RtkState rtk, Navigation nav,
-                                             ProcessingOptions opt, double[] pos) {
-        double[] ambValues = new double[ambParams.size()];
-
-        for (int j = 0; j < ambParams.size(); j++) {
-            AmbParam ap = ambParams.get(j);
-            int f = ap.freq;
-
-            // Average code-phase bias over all epochs in this segment
-            double sumBias = 0;
-            int count = 0;
-            int maxEp = Math.min(ap.endEpoch + 1, epochs.size());
-
-            for (int ep = ap.startEpoch; ep < maxEp; ep++) {
-                EpochData ed = epochs.get(ep);
-
-                int satIdx = -1;
-                for (int i = 0; i < ed.ns; i++) {
-                    if (ed.sat[i] == ap.sat) { satIdx = i; break; }
-                }
-                if (satIdx < 0) continue;
-
-                int iu = ed.iu[satIdx];
-                int ir = ed.ir[satIdx];
-
-                double L_rov = ed.obs[iu].L[f];
-                double L_base = ed.obs[ir].L[f];
-                double P_rov = ed.obs[iu].P[f];
-                double P_base = ed.obs[ir].P[f];
-
-                if (L_rov == 0.0 || L_base == 0.0 || P_rov == 0.0 || P_base == 0.0) continue;
-
-                double freq = SignalUtil.sat2freq(ap.sat, ed.obs[iu].code[f], nav);
-                if (freq == 0.0) continue;
-
-                double sdPhase = L_rov - L_base; // cycles
-                double sdCode = P_rov - P_base;  // meters
-
-                sumBias += sdPhase - sdCode * freq / CLIGHT;
-                count++;
-            }
-
-            if (count > 0) {
-                ambValues[j] = sumBias / count;
-            }
-        }
-
-        return ambValues;
+        return initDdAmbFromZdres(epochs, ambParams, nav, opt, pos, nf);
     }
 
     /**
@@ -1212,6 +1158,7 @@ public final class BatchSolver {
         boolean[] seen = new boolean[MAXSAT];
         for (AmbParam ap : ambParams) {
             if (ap.sat > 0 && ap.sat <= MAXSAT) seen[ap.sat - 1] = true;
+            if (ap.refSat > 0 && ap.refSat <= MAXSAT) seen[ap.refSat - 1] = true;
         }
         int count = 0;
         for (boolean s : seen) if (s) count++;

@@ -66,7 +66,7 @@ class BlsVsEkfTest {
         // GPS + GLO only. GAL excluded because ddres groups GPS+GAL in m=0,
         // creating cross-system DD with ISB that biases position.
         // GLO is safe: separate m=1 group, no cross-system DD.
-        opt.navsys = SYS_GPS | SYS_GLO;
+        opt.navsys = SYS_GPS | SYS_GLO | SYS_GAL | SYS_QZS | SYS_CMP | SYS_SBS;
         opt.elmin = 15.0 * D2R;
         opt.ionoopt = IONOOPT_BRDC;
         opt.tropopt = TROPOPT_SAAS;

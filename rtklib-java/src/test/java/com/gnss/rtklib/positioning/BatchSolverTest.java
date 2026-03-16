@@ -79,7 +79,7 @@ class BatchSolverTest {
         opt.mode = PMODE_STATIC;
         opt.nf = 3;                  // L1+L2+L5 (L2 empty for GPS, L5 at freq[2])
         // GPS + GLO. GAL excluded due to ISB in ddres m=0 group.
-        opt.navsys = SYS_GPS | SYS_GLO;
+        opt.navsys = SYS_GPS | SYS_GLO | SYS_GAL | SYS_QZS | SYS_CMP | SYS_SBS;
         opt.elmin = 15.0 * D2R;
         opt.ionoopt = IONOOPT_BRDC;
         opt.tropopt = TROPOPT_SAAS;
