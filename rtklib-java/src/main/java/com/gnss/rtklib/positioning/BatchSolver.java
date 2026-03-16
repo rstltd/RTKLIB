@@ -475,60 +475,117 @@ public final class BatchSolver {
             }
         }
 
-        // LAMBDA
-        double[] F = new double[nAR * 2];
-        double[] s = new double[2];
-        int info = Lambda.lambda(nAR, 2, aAR, QaaAR, F, s);
+        // Partial Ambiguity Resolution (PAR):
+        // Sort ambiguities by Qaa diagonal (ascending = most precise first).
+        // Try LAMBDA with full set first; if ratio fails, progressively remove
+        // the weakest ambiguities until ratio passes or subset too small.
+        Integer[] sortOrder = new Integer[nAR];
+        for (int i = 0; i < nAR; i++) sortOrder[i] = i;
+        java.util.Arrays.sort(sortOrder, (a1, b1) ->
+                Double.compare(QaaAR[a1 + a1 * nAR], QaaAR[b1 + b1 * nAR]));
 
-        float ratio;
-        if (info != 0 || s[0] <= 0) {
-            return new BatchResult(pos, qr, SOLQ_FLOAT, 0, ns, epochs.size(), nAmb, ambValues, ambParams);
+        float ratio = 0;
+        double[] bestF = null;
+        List<Integer> bestSubset = null;
+        int bestNfix = 0;
+
+        // Try from full set down to minimum (opt.minfixsats - 1, at least 4)
+        int minAR = Math.max(4, opt.minfixsats - 1);
+
+        for (int nTry = nAR; nTry >= minAR; nTry--) {
+            // Take the nTry most precise ambiguities
+            double[] aSub = new double[nTry];
+            double[] QSub = new double[nTry * nTry];
+            List<Integer> subIdx = new ArrayList<>();
+            for (int i = 0; i < nTry; i++) {
+                int si = sortOrder[i];
+                subIdx.add(si);
+                aSub[i] = aAR[si];
+                for (int j = 0; j < nTry; j++) {
+                    int sj = sortOrder[j];
+                    QSub[i + j * nTry] = QaaAR[si + sj * nAR];
+                }
+            }
+
+            double[] Ftry = new double[nTry * 2];
+            double[] stry = new double[2];
+            int info = Lambda.lambda(nTry, 2, aSub, QSub, Ftry, stry);
+            if (info != 0 || stry[0] <= 0) continue;
+
+            float r = (float) (stry[1] / stry[0]);
+            if (r > 999.9f) r = 999.9f;
+
+            float thres = (float) Rtkpos.computeAdaptiveArThreshold(nTry, opt.thresar[0]);
+            if (r >= thres) {
+                ratio = r;
+                bestF = Ftry;
+                bestSubset = subIdx;
+                bestNfix = nTry;
+                break; // take the largest subset that passes
+            }
+
+            // Track best ratio even if not passing
+            if (r > ratio) { ratio = r; }
         }
 
-        ratio = (float) (s[1] / s[0]);
-        if (ratio > 999.9f) ratio = 999.9f;
-
-        float thres = (float) Rtkpos.computeAdaptiveArThreshold(nAR, opt.thresar[0]);
-        if (ratio < thres) {
+        if (bestSubset == null || bestF == null) {
             return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
         }
 
-        // Fixed solution: dx_fix = -Qpa * Qaa^{-1} * (a_float - a_fix)
-        // Qaa^{-1} = Naa - Npa^T * Npp^{-1} * Npa  (Schur complement of Npp)
-        // For the AR sub-block: compute NaaRed_ar from Naa, Npa, Npp sub-blocks
-        double[] Qpa_ar = new double[3 * nAR];
+        // Map bestSubset indices back to arIdx indices
+        List<Integer> fixedArIdx = new ArrayList<>();
+        for (int si : bestSubset) fixedArIdx.add(si);
+
+        // Fixed solution using the fixed subset
+        double[] Qpa_ar = new double[3 * bestNfix];
         for (int i = 0; i < 3; i++) {
-            for (int j = 0; j < nAR; j++) {
-                Qpa_ar[i + j * 3] = Qpa[i + arIdx.get(j) * 3];
+            for (int j = 0; j < bestNfix; j++) {
+                Qpa_ar[i + j * 3] = Qpa[i + arIdx.get(fixedArIdx.get(j)) * 3];
             }
         }
 
-        // QaaInv_ar = inverse of QaaAR (marginal covariance)
-        double[] QaaInvAR = new double[nAR * nAR];
-        System.arraycopy(QaaAR, 0, QaaInvAR, 0, nAR * nAR);
-        if (MatrixUtil.matinv(QaaInvAR, nAR) != 0) {
+        // Build NaaAR for the fixed subset (from Naa, not Qaa)
+        double[] NaaFix = new double[bestNfix * bestNfix];
+        for (int i = 0; i < bestNfix; i++) {
+            for (int j = 0; j < bestNfix; j++) {
+                NaaFix[i + j * bestNfix] = Naa[arIdx.get(fixedArIdx.get(i))
+                        + arIdx.get(fixedArIdx.get(j)) * nAmb];
+            }
+        }
+
+        // QaaInv for fixed subset
+        double[] QaaFixSub = new double[bestNfix * bestNfix];
+        for (int i = 0; i < bestNfix; i++) {
+            for (int j = 0; j < bestNfix; j++) {
+                QaaFixSub[i + j * bestNfix] = QaaAR[fixedArIdx.get(i) + fixedArIdx.get(j) * nAR];
+            }
+        }
+        double[] QaaInvFix = new double[bestNfix * bestNfix];
+        System.arraycopy(QaaFixSub, 0, QaaInvFix, 0, bestNfix * bestNfix);
+        if (MatrixUtil.matinv(QaaInvFix, bestNfix) != 0) {
             return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
         }
 
-        double[] da = new double[nAR];
-        for (int i = 0; i < nAR; i++) da[i] = aAR[i] - F[i];
+        double[] da = new double[bestNfix];
+        for (int i = 0; i < bestNfix; i++) da[i] = aAR[fixedArIdx.get(i)] - bestF[i];
 
-        // QaaInv * da
-        double[] QaaInvDa = new double[nAR];
-        MatrixUtil.matmul("NN", nAR, 1, nAR, QaaInvAR, da, QaaInvDa);
+        double[] QaaInvDa = new double[bestNfix];
+        MatrixUtil.matmul("NN", bestNfix, 1, bestNfix, QaaInvFix, da, QaaInvDa);
+
+        int nFixFinal = bestNfix; // used in covariance computation below
 
         // pos_fix = pos_float - Qpa_ar * QaaInv * da
         double[] posFix = new double[3];
         System.arraycopy(pos, 0, posFix, 0, 3);
-        MatrixUtil.matmul("NN", 3, 1, nAR, -1.0, Qpa_ar, QaaInvDa, 1.0, posFix);
+        MatrixUtil.matmul("NN", 3, 1, nFixFinal, -1.0, Qpa_ar, QaaInvDa, 1.0, posFix);
 
         // Fixed covariance: Qfix = Qpp - Qpa_ar * QaaInv_ar * Qpa_ar^T
         float[] qrFix = new float[6];
-        double[] QpaQaaInv = new double[3 * nAR];
-        MatrixUtil.matmul("NN", 3, nAR, nAR, Qpa_ar, QaaInvAR, QpaQaaInv);
+        double[] QpaQaaInv = new double[3 * nFixFinal];
+        MatrixUtil.matmul("NN", 3, nFixFinal, nFixFinal, Qpa_ar, QaaInvFix, QpaQaaInv);
         double[] Qfix = new double[9];
         System.arraycopy(Qpp, 0, Qfix, 0, 9);
-        MatrixUtil.matmul("NT", 3, 3, nAR, -1.0, QpaQaaInv, Qpa_ar, 1.0, Qfix);
+        MatrixUtil.matmul("NT", 3, 3, nFixFinal, -1.0, QpaQaaInv, Qpa_ar, 1.0, Qfix);
         qrFix[0] = (float) Qfix[0]; qrFix[1] = (float) Qfix[4]; qrFix[2] = (float) Qfix[8];
         qrFix[3] = (float) Qfix[1]; qrFix[4] = (float) Qfix[5]; qrFix[5] = (float) Qfix[2];
 
