@@ -286,17 +286,23 @@ public final class BatchSolver {
                 return new BatchResult(pos, new float[6], SOLQ_NONE, 0, 0, epochs.size(), nAmb);
             }
 
-            // Regularize ambiguities with weak observations
+            // Check for weakly observed ambiguities (near-zero Naa diagonal).
+            // In correct DD parameterization with per-system ref sat, this should
+            // not happen. If it does, it indicates a segment/ref-sat bug.
+            // Regularize as last resort to prevent singular Naa, but this biases
+            // the affected ambiguity toward zero.
             double maxNaaDiag = 0;
             for (int j = 0; j < nAmb; j++) {
                 double d = N[(3 + j) + (3 + j) * nx];
                 if (d > maxNaaDiag) maxNaaDiag = d;
             }
-            double minDiag = maxNaaDiag * 1e-6;
-            for (int j = 0; j < nAmb; j++) {
-                int p = 3 + j;
-                if (N[p + p * nx] < minDiag) {
-                    N[p + p * nx] += minDiag;
+            if (maxNaaDiag > 0) {
+                double minDiag = maxNaaDiag * 1e-6;
+                for (int j = 0; j < nAmb; j++) {
+                    int p = 3 + j;
+                    if (N[p + p * nx] < minDiag) {
+                        N[p + p * nx] += minDiag;
+                    }
                 }
             }
 
@@ -628,38 +634,64 @@ public final class BatchSolver {
             EpochData ed = epochs.get(ep);
             boolean[][] seenThisEpoch = new boolean[MAXSAT][NFREQ];
 
+            // Phase 1: GF slip detection for ALL satellites (including potential ref sats)
+            boolean[][] slipMap = new boolean[MAXSAT][NFREQ];
+            if (nf >= 2) {
+                for (int i = 0; i < ed.ns; i++) {
+                    int sat = ed.sat[i];
+                    int sys = SatelliteUtil.satsys(sat)[0];
+                    if ((sys & opt.navsys) == 0) continue;
+
+                    double L0rov = ed.obs[ed.iu[i]].L[0];
+                    double L0base = ed.obs[ed.ir[i]].L[0];
+                    double f0 = SignalUtil.sat2freq(sat, ed.obs[ed.iu[i]].code[0], null);
+                    if (L0rov == 0 || L0base == 0 || f0 <= 0) continue;
+                    double sdL0 = (L0rov - L0base) * CLIGHT / f0;
+
+                    for (int f = 1; f < nf; f++) {
+                        double Lfrov = ed.obs[ed.iu[i]].L[f];
+                        double Lfbase = ed.obs[ed.ir[i]].L[f];
+                        double ff = SignalUtil.sat2freq(sat, ed.obs[ed.iu[i]].code[f], null);
+                        if (Lfrov == 0 || Lfbase == 0 || ff <= 0) continue;
+                        double sdLf = (Lfrov - Lfbase) * CLIGHT / ff;
+                        double gf = sdL0 - sdLf;
+                        if (hasGf[sat - 1][f] && Math.abs(gf - prevGf[sat - 1][f]) > 0.05) {
+                            slipMap[sat - 1][0] = true;
+                            slipMap[sat - 1][f] = true;
+                        }
+                        prevGf[sat - 1][f] = gf;
+                        hasGf[sat - 1][f] = true;
+                    }
+                }
+            }
+
+            // Phase 2: Propagate ref sat slips to all DD pairs using that ref
+            int[] systems = {SYS_GPS, SYS_GLO, SYS_GAL, SYS_QZS, SYS_CMP, SYS_IRN, SYS_SBS};
+            boolean[][] refSlipForce = new boolean[MAXSAT][NFREQ];
+            for (int si = 0; si < systems.length; si++) {
+                if ((systems[si] & opt.navsys) == 0) continue;
+                for (int f = 0; f < nf; f++) {
+                    int refSat = refSatMap[si][f];
+                    if (refSat == 0) continue;
+                    if (slipMap[refSat - 1][f]) {
+                        // Ref sat has slip on freq f → force new segment for all
+                        // active DD pairs in this system/freq group
+                        for (int s = 0; s < MAXSAT; s++) {
+                            if (active[s][f] && SatelliteUtil.satsys(s + 1)[0] == systems[si]) {
+                                refSlipForce[s][f] = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Phase 3: Build/update DD segments
             for (int i = 0; i < ed.ns; i++) {
                 int sat = ed.sat[i];
                 int sys = SatelliteUtil.satsys(sat)[0];
                 if ((sys & opt.navsys) == 0) continue;
                 int si = sysIndex(sys);
                 if (si < 0) continue;
-
-                // Geometry-free cycle slip detection (L1-Lf for f>0)
-                boolean[] slipDetected = new boolean[NFREQ];
-                if (nf >= 2) {
-                    double L0rov = ed.obs[ed.iu[i]].L[0];
-                    double L0base = ed.obs[ed.ir[i]].L[0];
-                    double f0 = SignalUtil.sat2freq(sat, ed.obs[ed.iu[i]].code[0], null);
-                    if (L0rov != 0 && L0base != 0 && f0 > 0) {
-                        double sdL0 = (L0rov - L0base) * CLIGHT / f0; // SD L1 in meters
-                        for (int f = 1; f < nf; f++) {
-                            double Lfrov = ed.obs[ed.iu[i]].L[f];
-                            double Lfbase = ed.obs[ed.ir[i]].L[f];
-                            double ff = SignalUtil.sat2freq(sat, ed.obs[ed.iu[i]].code[f], null);
-                            if (Lfrov == 0 || Lfbase == 0 || ff <= 0) continue;
-                            double sdLf = (Lfrov - Lfbase) * CLIGHT / ff; // SD Lf in meters
-                            double gf = sdL0 - sdLf; // geometry-free combination
-                            if (hasGf[sat - 1][f] && Math.abs(gf - prevGf[sat - 1][f]) > 0.05) {
-                                // Geometry-free jump > 0.05m → cycle slip on f=0 or f
-                                slipDetected[0] = true;
-                                slipDetected[f] = true;
-                            }
-                            prevGf[sat - 1][f] = gf;
-                            hasGf[sat - 1][f] = true;
-                        }
-                    }
-                }
 
                 for (int f = 0; f < nf; f++) {
                     int refSat = refSatMap[si][f];
@@ -680,11 +712,12 @@ public final class BatchSolver {
 
                     seenThisEpoch[sat - 1][f] = true;
 
-                    // Start new segment on: first appearance OR cycle slip
-                    boolean needNew = !active[sat - 1][f] || slipDetected[f];
+                    // New segment on: first appearance, own slip, OR ref sat slip
+                    boolean needNew = !active[sat - 1][f]
+                                   || slipMap[sat - 1][f]
+                                   || refSlipForce[sat - 1][f];
 
                     if (needNew) {
-                        // End previous segment if active
                         if (active[sat - 1][f]) {
                             for (int p = params.size() - 1; p >= 0; p--) {
                                 AmbParam ap = params.get(p);
@@ -695,7 +728,6 @@ public final class BatchSolver {
                             }
                             currentSegment[sat - 1][f]++;
                         }
-                        // Start new DD segment
                         AmbParam ap = new AmbParam(refSat, sat, f,
                                 currentSegment[sat - 1][f], ep);
                         params.add(ap);
