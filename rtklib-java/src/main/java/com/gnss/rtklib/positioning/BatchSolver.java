@@ -475,157 +475,421 @@ public final class BatchSolver {
             }
         }
 
-        // Partial Ambiguity Resolution (PAR):
-        // Sort ambiguities by Qaa diagonal (ascending = most precise first).
-        // Try LAMBDA with full set first; if ratio fails, progressively remove
-        // the weakest ambiguities until ratio passes or subset too small.
-        // Sort by LD conditional variance (D[i] from Q = L'DL decomposition).
-        // D[i] represents how well ambiguity i can be resolved given the others.
-        // This is more accurate than Qaa diagonal for LAMBDA search ordering.
-        double[] ldL = new double[nAR * nAR];
-        double[] ldD = new double[nAR];
-        double[] QaaClone = QaaAR.clone();
-        Integer[] sortOrder = new Integer[nAR];
-        for (int i = 0; i < nAR; i++) sortOrder[i] = i;
+        // ========== WL/NL Two-Step AR ==========
 
-        if (Lambda.LD(nAR, QaaClone, ldL, ldD) == 0) {
-            // Sort by D[i] ascending (smallest conditional variance = easiest to fix)
-            java.util.Arrays.sort(sortOrder, (a1, b1) ->
-                    Double.compare(ldD[a1], ldD[b1]));
-        } else {
-            // Fallback to Qaa diagonal if LD fails
-            java.util.Arrays.sort(sortOrder, (a1, b1) ->
-                    Double.compare(QaaAR[a1 + a1 * nAR], QaaAR[b1 + b1 * nAR]));
+        // Step 1: Pair L1/L5 ambiguities
+        // For each AR-eligible amb at freq=0 (L1), find matching freq=2 (L5)
+        // with same refSat, same sat, overlapping segments.
+        List<int[]> dualPairs = new ArrayList<>();  // {arIdx_for_L1, arIdx_for_L5}
+        boolean[] paired = new boolean[nAR];
+
+        for (int i = 0; i < nAR; i++) {
+            AmbParam api = ambParams.get(arIdx.get(i));
+            if (api.freq != 0) continue;  // only start from L1
+            for (int j = 0; j < nAR; j++) {
+                if (paired[j]) continue;
+                AmbParam apj = ambParams.get(arIdx.get(j));
+                if (apj.freq != 2) continue;  // L5 is at freq index 2
+                if (apj.refSat != api.refSat || apj.sat != api.sat) continue;
+                // Check segment overlap
+                if (api.startEpoch > apj.endEpoch || api.endEpoch < apj.startEpoch) continue;
+                dualPairs.add(new int[]{i, j});
+                paired[i] = true;
+                paired[j] = true;
+                break;
+            }
         }
 
+        // Single-freq (L1 only) ambiguities for NL step
+        List<Integer> singleIdx = new ArrayList<>();
+        for (int i = 0; i < nAR; i++) {
+            if (!paired[i] && ambParams.get(arIdx.get(i)).freq == 0) {
+                singleIdx.add(i);
+            }
+        }
+
+        int nWL = dualPairs.size();
         float ratio = 0;
-        double[] bestF = null;
-        List<Integer> bestSubset = null;
-        int bestNfix = 0;
+        int[] fixedOriginal = null;  // fixed integer values for all nAR ambs (null = fail)
 
-        // Try from full set down to minimum (opt.minfixsats - 1, at least 4)
-        int minAR = Math.max(4, opt.minfixsats - 1);
+        if (nWL >= 4) {
+            // Step 2: WL fix
+            double[] aWL = new double[nWL];
+            double[] QWL = new double[nWL * nWL];
 
-        for (int nTry = nAR; nTry >= minAR; nTry--) {
-            // Take the nTry most precise ambiguities
-            double[] aSub = new double[nTry];
-            double[] QSub = new double[nTry * nTry];
-            List<Integer> subIdx = new ArrayList<>();
-            for (int i = 0; i < nTry; i++) {
-                int si = sortOrder[i];
-                subIdx.add(si);
-                aSub[i] = aAR[si];
-                for (int j = 0; j < nTry; j++) {
-                    int sj = sortOrder[j];
-                    QSub[i + j * nTry] = QaaAR[si + sj * nAR];
+            for (int i = 0; i < nWL; i++) {
+                int li = dualPairs.get(i)[0], fi = dualPairs.get(i)[1];
+                aWL[i] = aAR[li] - aAR[fi];  // N_WL = N_L1 - N_L5 (cycles)
+            }
+
+            for (int i = 0; i < nWL; i++) {
+                int li = dualPairs.get(i)[0], fi = dualPairs.get(i)[1];
+                for (int j = 0; j < nWL; j++) {
+                    int lj = dualPairs.get(j)[0], fj = dualPairs.get(j)[1];
+                    // Var(N_WL) = Var(N_L1) + Var(N_L5) - 2*Cov(N_L1, N_L5)
+                    QWL[i + j * nWL] = QaaAR[li + lj * nAR] + QaaAR[fi + fj * nAR]
+                                     - QaaAR[li + fj * nAR] - QaaAR[fi + lj * nAR];
                 }
             }
 
-            double[] Ftry = new double[nTry * 2];
-            double[] stry = new double[2];
-            int info = Lambda.lambda(nTry, 2, aSub, QSub, Ftry, stry);
-            if (info != 0 || stry[0] <= 0) continue;
+            // LAMBDA on WL (should have very high ratio due to long wavelength)
+            double[] FWL = new double[nWL * 2];
+            double[] sWL = new double[2];
+            int infoWL = Lambda.lambda(nWL, 2, aWL, QWL, FWL, sWL);
 
-            float r = (float) (stry[1] / stry[0]);
-            if (r > 999.9f) r = 999.9f;
-
-            float thres = (float) Rtkpos.computeAdaptiveArThreshold(nTry, opt.thresar[0]);
-            if (r >= thres) {
-                ratio = r;
-                bestF = Ftry;
-                bestSubset = subIdx;
-                bestNfix = nTry;
-                break; // take the largest subset that passes
+            float ratioWL = 0;
+            if (infoWL == 0 && sWL[0] > 0) {
+                ratioWL = (float)(sWL[1] / sWL[0]);
+                if (ratioWL > 999.9f) ratioWL = 999.9f;
             }
 
-            // Track best ratio even if not passing
-            if (r > ratio) { ratio = r; }
-        }
+            if (ratioWL >= 2.0) {  // WL threshold is low (easy to fix)
+                // WL fixed! Now do NL step.
 
-        if (bestSubset == null || bestF == null) {
-            return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
-        }
+                // Step 3: NL fix
+                // NL for dual-freq: N_NL = N_L1 + N_L5 (integer)
+                // For single-freq: just N_L1
+                int nNL = nWL + singleIdx.size();
+                double[] aNL = new double[nNL];
+                double[] QNL = new double[nNL * nNL];
 
-        // Map bestSubset indices back to arIdx indices
-        List<Integer> fixedArIdx = new ArrayList<>();
-        for (int si : bestSubset) fixedArIdx.add(si);
+                // NL float values
+                for (int i = 0; i < nWL; i++) {
+                    int li = dualPairs.get(i)[0], fi = dualPairs.get(i)[1];
+                    aNL[i] = aAR[li] + aAR[fi];  // N_NL = N_L1 + N_L5
+                }
+                for (int i = 0; i < singleIdx.size(); i++) {
+                    aNL[nWL + i] = aAR[singleIdx.get(i)];  // L1 only
+                }
 
-        // Fixed solution using the fixed subset
-        double[] Qpa_ar = new double[3 * bestNfix];
-        for (int i = 0; i < 3; i++) {
-            for (int j = 0; j < bestNfix; j++) {
-                Qpa_ar[i + j * 3] = Qpa[i + arIdx.get(fixedArIdx.get(j)) * 3];
+                // NL covariance
+                for (int i = 0; i < nNL; i++) {
+                    for (int j = 0; j < nNL; j++) {
+                        double cov;
+                        if (i < nWL && j < nWL) {
+                            // Both dual-freq: Cov(N_L1_i+N_L5_i, N_L1_j+N_L5_j)
+                            int li = dualPairs.get(i)[0], fi = dualPairs.get(i)[1];
+                            int lj = dualPairs.get(j)[0], fj = dualPairs.get(j)[1];
+                            cov = QaaAR[li + lj * nAR] + QaaAR[fi + fj * nAR]
+                                + QaaAR[li + fj * nAR] + QaaAR[fi + lj * nAR];
+                        } else if (i < nWL) {
+                            // i dual, j single: Cov(N_L1_i+N_L5_i, N_L1_j)
+                            int li = dualPairs.get(i)[0], fi = dualPairs.get(i)[1];
+                            int sj = singleIdx.get(j - nWL);
+                            cov = QaaAR[li + sj * nAR] + QaaAR[fi + sj * nAR];
+                        } else if (j < nWL) {
+                            // i single, j dual
+                            int si = singleIdx.get(i - nWL);
+                            int lj = dualPairs.get(j)[0], fj = dualPairs.get(j)[1];
+                            cov = QaaAR[si + lj * nAR] + QaaAR[si + fj * nAR];
+                        } else {
+                            // Both single: Cov(N_L1_i, N_L1_j)
+                            int si = singleIdx.get(i - nWL);
+                            int sj = singleIdx.get(j - nWL);
+                            cov = QaaAR[si + sj * nAR];
+                        }
+                        QNL[i + j * nNL] = cov;
+                    }
+                }
+
+                // LAMBDA on NL with PAR (use LD conditional variance sorting)
+                double[] ldLnl = new double[nNL * nNL];
+                double[] ldDnl = new double[nNL];
+                double[] QNLclone = QNL.clone();
+                Integer[] sortNL = new Integer[nNL];
+                for (int i = 0; i < nNL; i++) sortNL[i] = i;
+
+                if (Lambda.LD(nNL, QNLclone, ldLnl, ldDnl) == 0) {
+                    java.util.Arrays.sort(sortNL, (a1, b1) ->
+                            Double.compare(ldDnl[a1], ldDnl[b1]));
+                } else {
+                    java.util.Arrays.sort(sortNL, (a1, b1) ->
+                            Double.compare(QNL[a1 + a1 * nNL], QNL[b1 + b1 * nNL]));
+                }
+
+                // PAR loop for NL
+                int minNL = Math.max(4, opt.minfixsats - 1);
+                double[] bestFNL = null;
+                List<Integer> bestSubNL = null;
+                float bestRatioNL = 0;
+
+                for (int nTry = nNL; nTry >= minNL; nTry--) {
+                    double[] aSub = new double[nTry];
+                    double[] QSub = new double[nTry * nTry];
+                    List<Integer> subIdx = new ArrayList<>();
+                    for (int i = 0; i < nTry; i++) {
+                        int si = sortNL[i];
+                        subIdx.add(si);
+                        aSub[i] = aNL[si];
+                        for (int j = 0; j < nTry; j++) {
+                            QSub[i + j * nTry] = QNL[sortNL[i] + sortNL[j] * nNL];
+                        }
+                    }
+
+                    double[] Ftry = new double[nTry * 2];
+                    double[] stry = new double[2];
+                    int info = Lambda.lambda(nTry, 2, aSub, QSub, Ftry, stry);
+                    if (info != 0 || stry[0] <= 0) continue;
+
+                    float r = (float)(stry[1] / stry[0]);
+                    if (r > 999.9f) r = 999.9f;
+
+                    float thres = (float) Rtkpos.computeAdaptiveArThreshold(nTry, opt.thresar[0]);
+                    if (r >= thres) {
+                        bestRatioNL = r;
+                        bestFNL = Ftry;
+                        bestSubNL = subIdx;
+                        break;
+                    }
+                    if (r > bestRatioNL) bestRatioNL = r;
+                }
+
+                if (bestSubNL != null && bestFNL != null) {
+                    // Step 4: Recover original L1/L5 integers from WL + NL
+                    int bestNfix = bestSubNL.size();
+
+                    // Minimum fix count check
+                    if (bestNfix >= Math.max(8, nAR / 3)) {
+                        fixedOriginal = new int[nAR];
+                        java.util.Arrays.fill(fixedOriginal, Integer.MIN_VALUE); // unfixed marker
+
+                        for (int i = 0; i < bestNfix; i++) {
+                            int nlIdx = bestSubNL.get(i);
+                            int nlFix = (int) Math.round(bestFNL[i]);
+
+                            if (nlIdx < nWL) {
+                                // Dual-freq: recover L1 and L5 from WL + NL
+                                int wlFix = (int) Math.round(FWL[nlIdx]);
+                                // N_WL = N_L1 - N_L5, N_NL = N_L1 + N_L5
+                                // N_L1 = (N_WL + N_NL) / 2, N_L5 = (N_NL - N_WL) / 2
+                                // Both must be integer, so N_WL and N_NL must have same parity
+                                if ((wlFix + nlFix) % 2 != 0) {
+                                    // Parity mismatch — adjust NL by 1 to nearest valid value
+                                    double nlFloat = aNL[nlIdx];
+                                    if (nlFloat - nlFix > 0) nlFix++; else nlFix--;
+                                }
+                                int nL1 = (wlFix + nlFix) / 2;
+                                int nL5 = (nlFix - wlFix) / 2;
+
+                                fixedOriginal[dualPairs.get(nlIdx)[0]] = nL1;
+                                fixedOriginal[dualPairs.get(nlIdx)[1]] = nL5;
+                            } else {
+                                // Single-freq L1
+                                int sIdx = singleIdx.get(nlIdx - nWL);
+                                fixedOriginal[sIdx] = nlFix;
+                            }
+                        }
+
+                        ratio = bestRatioNL;
+                    }
+                }
             }
         }
 
-        // QaaInv for fixed subset (from marginal Qaa, not Naa)
-        double[] QaaFixSub = new double[bestNfix * bestNfix];
-        for (int i = 0; i < bestNfix; i++) {
-            for (int j = 0; j < bestNfix; j++) {
-                QaaFixSub[i + j * bestNfix] = QaaAR[fixedArIdx.get(i) + fixedArIdx.get(j) * nAR];
+        // Step 5: If WL/NL succeeded, compute fixed solution
+        if (fixedOriginal != null) {
+            // Count how many are actually fixed
+            List<Integer> fixedArSubset = new ArrayList<>();
+            for (int i = 0; i < nAR; i++) {
+                if (fixedOriginal[i] != Integer.MIN_VALUE) fixedArSubset.add(i);
+            }
+            int bestNfix = fixedArSubset.size();
+
+            // Extract fixed subset for position computation
+            double[] Qpa_ar = new double[3 * bestNfix];
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < bestNfix; j++) {
+                    Qpa_ar[i + j * 3] = Qpa[i + arIdx.get(fixedArSubset.get(j)) * 3];
+                }
+            }
+
+            // QaaInv for fixed subset
+            double[] QaaFixSub = new double[bestNfix * bestNfix];
+            for (int i = 0; i < bestNfix; i++) {
+                for (int j = 0; j < bestNfix; j++) {
+                    QaaFixSub[i + j * bestNfix] = QaaAR[fixedArSubset.get(i) + fixedArSubset.get(j) * nAR];
+                }
+            }
+            double[] QaaInvFix = new double[bestNfix * bestNfix];
+            System.arraycopy(QaaFixSub, 0, QaaInvFix, 0, bestNfix * bestNfix);
+            if (MatrixUtil.matinv(QaaInvFix, bestNfix) != 0) {
+                // Fall through to single-step PAR
+                fixedOriginal = null;
+            } else {
+                double[] da = new double[bestNfix];
+                for (int i = 0; i < bestNfix; i++) {
+                    da[i] = aAR[fixedArSubset.get(i)] - fixedOriginal[fixedArSubset.get(i)];
+                }
+
+                double[] QaaInvDa = new double[bestNfix];
+                MatrixUtil.matmul("NN", bestNfix, 1, bestNfix, QaaInvFix, da, QaaInvDa);
+
+                double[] posFix = new double[3];
+                System.arraycopy(pos, 0, posFix, 0, 3);
+                MatrixUtil.matmul("NN", 3, 1, bestNfix, -1.0, Qpa_ar, QaaInvDa, 1.0, posFix);
+
+                // Fixed covariance
+                float[] qrFix = new float[6];
+                double[] QpaQaaInv = new double[3 * bestNfix];
+                MatrixUtil.matmul("NN", 3, bestNfix, bestNfix, Qpa_ar, QaaInvFix, QpaQaaInv);
+                double[] Qfix = new double[9];
+                System.arraycopy(Qpp, 0, Qfix, 0, 9);
+                MatrixUtil.matmul("NT", 3, 3, bestNfix, -1.0, QpaQaaInv, Qpa_ar, 1.0, Qfix);
+                qrFix[0] = (float) Qfix[0]; qrFix[1] = (float) Qfix[4]; qrFix[2] = (float) Qfix[8];
+                qrFix[3] = (float) Qfix[1]; qrFix[4] = (float) Qfix[5]; qrFix[5] = (float) Qfix[2];
+
+                // Post-fix validation
+                double[] fixedAmb = new double[nAmb];
+                System.arraycopy(ambValues, 0, fixedAmb, 0, nAmb);
+                java.util.Set<Integer> fixedIndices = new java.util.HashSet<>();
+                for (int idx : fixedArSubset) {
+                    int fullIdx = arIdx.get(idx);
+                    fixedAmb[fullIdx] = fixedOriginal[idx];
+                    fixedIndices.add(fullIdx);
+                }
+
+                double postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
+                        posFix, fixedAmb, nf, refSatMap, fixedIndices);
+
+                if (postFixRms <= 0.05) {
+                    return new BatchResult(posFix, qrFix, SOLQ_FIX, ratio, ns,
+                            epochs.size(), nAmb, ambValues, ambParams);
+                }
+                // else fall through to single-step PAR
+                fixedOriginal = null;
             }
         }
-        double[] QaaInvFix = new double[bestNfix * bestNfix];
-        System.arraycopy(QaaFixSub, 0, QaaInvFix, 0, bestNfix * bestNfix);
-        if (MatrixUtil.matinv(QaaInvFix, bestNfix) != 0) {
-            return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
+
+        // Step 6: Fallback to single-step PAR (existing logic)
+        if (fixedOriginal == null) {
+            // Partial Ambiguity Resolution (PAR):
+            // Sort by LD conditional variance (D[i] from Q = L'DL decomposition).
+            double[] ldL = new double[nAR * nAR];
+            double[] ldD = new double[nAR];
+            double[] QaaClone = QaaAR.clone();
+            Integer[] sortOrder = new Integer[nAR];
+            for (int i = 0; i < nAR; i++) sortOrder[i] = i;
+
+            if (Lambda.LD(nAR, QaaClone, ldL, ldD) == 0) {
+                java.util.Arrays.sort(sortOrder, (a1, b1) ->
+                        Double.compare(ldD[a1], ldD[b1]));
+            } else {
+                java.util.Arrays.sort(sortOrder, (a1, b1) ->
+                        Double.compare(QaaAR[a1 + a1 * nAR], QaaAR[b1 + b1 * nAR]));
+            }
+
+            double[] bestF = null;
+            List<Integer> bestSubset = null;
+            int bestNfix = 0;
+
+            int minAR = Math.max(4, opt.minfixsats - 1);
+
+            for (int nTry = nAR; nTry >= minAR; nTry--) {
+                double[] aSub = new double[nTry];
+                double[] QSub = new double[nTry * nTry];
+                List<Integer> subIdx = new ArrayList<>();
+                for (int i = 0; i < nTry; i++) {
+                    int si = sortOrder[i];
+                    subIdx.add(si);
+                    aSub[i] = aAR[si];
+                    for (int j = 0; j < nTry; j++) {
+                        int sj = sortOrder[j];
+                        QSub[i + j * nTry] = QaaAR[si + sj * nAR];
+                    }
+                }
+
+                double[] Ftry = new double[nTry * 2];
+                double[] stry = new double[2];
+                int info = Lambda.lambda(nTry, 2, aSub, QSub, Ftry, stry);
+                if (info != 0 || stry[0] <= 0) continue;
+
+                float r = (float) (stry[1] / stry[0]);
+                if (r > 999.9f) r = 999.9f;
+
+                float thres = (float) Rtkpos.computeAdaptiveArThreshold(nTry, opt.thresar[0]);
+                if (r >= thres) {
+                    ratio = r;
+                    bestF = Ftry;
+                    bestSubset = subIdx;
+                    bestNfix = nTry;
+                    break;
+                }
+
+                if (r > ratio) { ratio = r; }
+            }
+
+            if (bestSubset == null || bestF == null) {
+                return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
+            }
+
+            List<Integer> fixedArIdx = new ArrayList<>();
+            for (int si : bestSubset) fixedArIdx.add(si);
+
+            double[] Qpa_ar = new double[3 * bestNfix];
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < bestNfix; j++) {
+                    Qpa_ar[i + j * 3] = Qpa[i + arIdx.get(fixedArIdx.get(j)) * 3];
+                }
+            }
+
+            double[] QaaFixSub = new double[bestNfix * bestNfix];
+            for (int i = 0; i < bestNfix; i++) {
+                for (int j = 0; j < bestNfix; j++) {
+                    QaaFixSub[i + j * bestNfix] = QaaAR[fixedArIdx.get(i) + fixedArIdx.get(j) * nAR];
+                }
+            }
+            double[] QaaInvFix = new double[bestNfix * bestNfix];
+            System.arraycopy(QaaFixSub, 0, QaaInvFix, 0, bestNfix * bestNfix);
+            if (MatrixUtil.matinv(QaaInvFix, bestNfix) != 0) {
+                return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
+            }
+
+            double[] da = new double[bestNfix];
+            for (int i = 0; i < bestNfix; i++) da[i] = aAR[fixedArIdx.get(i)] - bestF[i];
+
+            double[] QaaInvDa = new double[bestNfix];
+            MatrixUtil.matmul("NN", bestNfix, 1, bestNfix, QaaInvFix, da, QaaInvDa);
+
+            double[] posFix = new double[3];
+            System.arraycopy(pos, 0, posFix, 0, 3);
+            MatrixUtil.matmul("NN", 3, 1, bestNfix, -1.0, Qpa_ar, QaaInvDa, 1.0, posFix);
+
+            float[] qrFix = new float[6];
+            double[] QpaQaaInv = new double[3 * bestNfix];
+            MatrixUtil.matmul("NN", 3, bestNfix, bestNfix, Qpa_ar, QaaInvFix, QpaQaaInv);
+            double[] Qfix = new double[9];
+            System.arraycopy(Qpp, 0, Qfix, 0, 9);
+            MatrixUtil.matmul("NT", 3, 3, bestNfix, -1.0, QpaQaaInv, Qpa_ar, 1.0, Qfix);
+            qrFix[0] = (float) Qfix[0]; qrFix[1] = (float) Qfix[4]; qrFix[2] = (float) Qfix[8];
+            qrFix[3] = (float) Qfix[1]; qrFix[4] = (float) Qfix[5]; qrFix[5] = (float) Qfix[2];
+
+            if (bestNfix < Math.max(8, nAR / 3)) {
+                return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns,
+                        epochs.size(), nAmb, ambValues, ambParams);
+            }
+
+            double[] fixedAmb = new double[nAmb];
+            System.arraycopy(ambValues, 0, fixedAmb, 0, nAmb);
+            java.util.Set<Integer> fixedIndices = new java.util.HashSet<>();
+            for (int i = 0; i < bestNfix; i++) {
+                int fullIdx = arIdx.get(fixedArIdx.get(i));
+                fixedAmb[fullIdx] = bestF[i];
+                fixedIndices.add(fullIdx);
+            }
+
+            double postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
+                    posFix, fixedAmb, nf, refSatMap, fixedIndices);
+
+            if (postFixRms > 0.05) {
+                return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns,
+                        epochs.size(), nAmb, ambValues, ambParams);
+            }
+
+            return new BatchResult(posFix, qrFix, SOLQ_FIX, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
         }
 
-        double[] da = new double[bestNfix];
-        for (int i = 0; i < bestNfix; i++) da[i] = aAR[fixedArIdx.get(i)] - bestF[i];
-
-        double[] QaaInvDa = new double[bestNfix];
-        MatrixUtil.matmul("NN", bestNfix, 1, bestNfix, QaaInvFix, da, QaaInvDa);
-
-        int nFixFinal = bestNfix; // used in covariance computation below
-
-        // pos_fix = pos_float - Qpa_ar * QaaInv * da
-        double[] posFix = new double[3];
-        System.arraycopy(pos, 0, posFix, 0, 3);
-        MatrixUtil.matmul("NN", 3, 1, nFixFinal, -1.0, Qpa_ar, QaaInvDa, 1.0, posFix);
-
-        // Fixed covariance: Qfix = Qpp - Qpa_ar * QaaInv_ar * Qpa_ar^T
-        float[] qrFix = new float[6];
-        double[] QpaQaaInv = new double[3 * nFixFinal];
-        MatrixUtil.matmul("NN", 3, nFixFinal, nFixFinal, Qpa_ar, QaaInvFix, QpaQaaInv);
-        double[] Qfix = new double[9];
-        System.arraycopy(Qpp, 0, Qfix, 0, 9);
-        MatrixUtil.matmul("NT", 3, 3, nFixFinal, -1.0, QpaQaaInv, Qpa_ar, 1.0, Qfix);
-        qrFix[0] = (float) Qfix[0]; qrFix[1] = (float) Qfix[4]; qrFix[2] = (float) Qfix[8];
-        qrFix[3] = (float) Qfix[1]; qrFix[4] = (float) Qfix[5]; qrFix[5] = (float) Qfix[2];
-
-        // Minimum fix count gate: too few fixed ambiguities means weak geometry.
-        // Even if ratio passes, the position constraint from a small subset is
-        // insufficient for reliable cm-level positioning.
-        if (bestNfix < Math.max(8, nAR / 3)) {
-            return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns,
-                    epochs.size(), nAmb, ambValues, ambParams);
-        }
-
-        // Post-fix validation: compute DD phase residuals with integer ambiguities.
-        // Only check the FIXED subset — unfixed float residuals are near-zero by
-        // definition and would dilute the detection of wrong-fix cycle errors.
-        double[] fixedAmb = new double[nAmb];
-        System.arraycopy(ambValues, 0, fixedAmb, 0, nAmb);
-        // Build set of fixed ambiguity indices for filtering
-        java.util.Set<Integer> fixedIndices = new java.util.HashSet<>();
-        for (int i = 0; i < bestNfix; i++) {
-            int fullIdx = arIdx.get(fixedArIdx.get(i));
-            fixedAmb[fullIdx] = bestF[i]; // integer value
-            fixedIndices.add(fullIdx);
-        }
-
-        double postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
-                posFix, fixedAmb, nf, refSatMap, fixedIndices);
-
-        if (postFixRms > 0.05) {
-            // Wrong fix detected: phase residual >> noise level.
-            // Fall back to float solution.
-            return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns,
-                    epochs.size(), nAmb, ambValues, ambParams);
-        }
-
-        return new BatchResult(posFix, qrFix, SOLQ_FIX, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
+        // Should not reach here (fixedOriginal != null handled above)
+        return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
     }
 
     // ---------------------------------------------------------------
@@ -661,17 +925,54 @@ public final class BatchSolver {
             int sys = systems[si];
             if ((sys & opt.navsys) == 0) continue;
 
-            for (int f = 0; f < nf; f++) {
-                int bestSat = 0;
-                int bestCount = 0;
-                for (int s = 1; s <= MAXSAT; s++) {
-                    if (SatelliteUtil.satsys(s)[0] != sys) continue;
-                    if (visCount[s - 1][f] > bestCount) {
-                        bestCount = visCount[s - 1][f];
-                        bestSat = s;
+            // Prefer same ref sat for L1 (freq=0) and L5 (freq=2) to maximize
+            // WL ionosphere cancellation. Pick satellite with longest dual-freq
+            // visibility: min(visCount[L1], visCount[L5]).
+            int bestDualSat = 0;
+            int bestDualCount = 0;
+            for (int s = 1; s <= MAXSAT; s++) {
+                if (SatelliteUtil.satsys(s)[0] != sys) continue;
+                int dualMin = Math.min(visCount[s - 1][0],
+                        nf > 2 ? visCount[s - 1][2] : 0);
+                if (dualMin > bestDualCount) {
+                    bestDualCount = dualMin;
+                    bestDualSat = s;
+                }
+            }
+
+            if (bestDualSat != 0) {
+                // Use the dual-freq satellite as ref for ALL frequencies
+                for (int f = 0; f < nf; f++) {
+                    if (visCount[bestDualSat - 1][f] > 0) {
+                        refSatMap[si][f] = bestDualSat;
+                    } else {
+                        // This freq not observed by dual-freq ref → per-freq fallback
+                        int bestSat = 0;
+                        int bestCount = 0;
+                        for (int s = 1; s <= MAXSAT; s++) {
+                            if (SatelliteUtil.satsys(s)[0] != sys) continue;
+                            if (visCount[s - 1][f] > bestCount) {
+                                bestCount = visCount[s - 1][f];
+                                bestSat = s;
+                            }
+                        }
+                        refSatMap[si][f] = bestSat;
                     }
                 }
-                refSatMap[si][f] = bestSat;
+            } else {
+                // No dual-freq satellite: fall back to per-freq logic
+                for (int f = 0; f < nf; f++) {
+                    int bestSat = 0;
+                    int bestCount = 0;
+                    for (int s = 1; s <= MAXSAT; s++) {
+                        if (SatelliteUtil.satsys(s)[0] != sys) continue;
+                        if (visCount[s - 1][f] > bestCount) {
+                            bestCount = visCount[s - 1][f];
+                            bestSat = s;
+                        }
+                    }
+                    refSatMap[si][f] = bestSat;
+                }
             }
         }
 
