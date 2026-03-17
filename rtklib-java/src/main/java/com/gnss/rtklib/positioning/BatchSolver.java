@@ -514,14 +514,14 @@ public final class BatchSolver {
 
         // Group AR-eligible ambiguities into connected components
         List<List<Integer>> arComponents = findArComponents(arIdx, ambParams);
-
         int[] fixedOriginal = new int[nAR];
         Arrays.fill(fixedOriginal, Integer.MIN_VALUE);
         float ratio = 0;
         float bestCompRatio = 0;
 
+        int compFixed = 0, compSkipped = 0, compFailed = 0;
         for (List<Integer> comp : arComponents) {
-            if (comp.size() < 4) continue; // too small for AR
+            if (comp.size() < 4) { compSkipped++; continue; } // too small for AR
 
             // Extract component sub-block from QaaAR
             int cn = comp.size();
@@ -538,24 +538,27 @@ public final class BatchSolver {
                     arIdx, opt);
 
             if (compFix != null) {
+                compFixed++;
                 // Write fixed integers back to fixedOriginal
                 for (int i = 0; i < cn; i++) {
                     if (compFix[i] != Integer.MIN_VALUE) {
                         fixedOriginal[comp.get(i)] = compFix[i];
                     }
                 }
+            } else {
+                compFailed++;
             }
         }
-
         // Count total fixed
         int totalFixed = 0;
         for (int i = 0; i < nAR; i++) {
             if (fixedOriginal[i] != Integer.MIN_VALUE) totalFixed++;
         }
 
-        // Minimum fix count
-        if (totalFixed < Math.max(8, nAR / 3)) {
-            // Not enough fixed from component AR — clear and fall through to single-step PAR
+        // Minimum fix count: at least 8, but don't require nAR/3 for component AR
+        // (many small components are valid; the 1/3 rule was for monolithic PAR)
+        if (totalFixed < 8) {
+            // Not enough fixed — clear and fall through to single-step PAR
             Arrays.fill(fixedOriginal, Integer.MIN_VALUE);
             totalFixed = 0;
         } else {
@@ -634,9 +637,9 @@ public final class BatchSolver {
 
                 double postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
                         posFix, fixedAmb, nf, refSatMap, fixedIndices);
-
                 // Iterative recovery: remove worst fixed amb until validation passes
-                int MAX_RECOVERY = 5;
+                // For component AR with many components, allow more recovery iterations
+                int MAX_RECOVERY = Math.max(10, fixedIndices.size() / 10);
                 for (int rec = 0; rec < MAX_RECOVERY && postFixRms > 0.05; rec++) {
                     int worstFullIdx = findWorstFixedAmb(epochs, ambParams, nav, opt,
                             posFix, fixedAmb, nf, refSatMap, fixedIndices);
@@ -859,8 +862,11 @@ public final class BatchSolver {
     }
 
     /**
-     * Group ambiguities into connected components based on temporal overlap.
-     * Two ambiguities are connected if their epoch ranges overlap.
+     * Group ambiguities into connected components.
+     * Two ambiguities are connected if they can appear in the same DD
+     * observation: same ref satellite, same frequency, AND overlapping epochs.
+     * This prevents chain-merging across systems or across non-overlapping
+     * ref-sat periods in long sessions.
      */
     private static List<List<Integer>> findAmbiguityComponents(List<AmbParam> ambParams) {
         int n = ambParams.size();
@@ -871,6 +877,9 @@ public final class BatchSolver {
             AmbParam a = ambParams.get(i);
             for (int j = i + 1; j < n; j++) {
                 AmbParam b = ambParams.get(j);
+                // Must share same ref sat and same freq to be in the same DD group
+                if (a.refSat != b.refSat || a.freq != b.freq) continue;
+                // Must have overlapping epoch ranges
                 if (a.startEpoch <= b.endEpoch && b.startEpoch <= a.endEpoch) {
                     ufUnion(parent, i, j);
                 }
@@ -898,6 +907,8 @@ public final class BatchSolver {
             AmbParam a = ambParams.get(arIdx.get(i));
             for (int j = i + 1; j < n; j++) {
                 AmbParam b = ambParams.get(arIdx.get(j));
+                // Same DD group: same ref sat and same freq
+                if (a.refSat != b.refSat || a.freq != b.freq) continue;
                 if (a.startEpoch <= b.endEpoch && b.startEpoch <= a.endEpoch) {
                     ufUnion(parent, i, j);
                 }
