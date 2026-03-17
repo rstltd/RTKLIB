@@ -966,6 +966,245 @@ public final class BatchSolver {
         return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns, epochs.size(), nAmb, ambValues, ambParams);
     }
 
+    /**
+     * Decimation + Constrained BLS: combines high AR success rate (from 30s
+     * decimated data) with high geometric precision (from full 1Hz data).
+     *
+     * Step 1: Decimate to ~30s intervals → run solve() for AR
+     * Step 2: If fix: use integer ambiguities as known constants
+     * Step 3: Re-solve position-only using ALL epochs (3x3 normal equation)
+     *
+     * @param decimationInterval decimation interval in seconds (e.g., 30)
+     */
+    public static BatchResult solveConstrained(List<List<ObsData>> roverEpochs,
+                                                List<List<ObsData>> baseEpochs,
+                                                Navigation nav, ProcessingOptions opt,
+                                                double decimationInterval) {
+        // Step 1: Decimate rover epochs to ~30s
+        List<List<ObsData>> decimated = new ArrayList<>();
+        double lastTime = -1e9;
+        for (List<ObsData> ep : roverEpochs) {
+            if (ep == null || ep.isEmpty()) continue;
+            double t = ep.get(0).time.time + ep.get(0).time.sec;
+            if (t - lastTime >= decimationInterval - 0.5) {
+                decimated.add(ep);
+                lastTime = t;
+            }
+        }
+
+        // Run full BLS with AR on decimated data
+        BatchResult arResult = solve(decimated, baseEpochs, nav, opt);
+
+        // If AR failed, fall back to full-rate solve without AR
+        if (arResult.stat != SOLQ_FIX || arResult.ambParams == null || arResult.ambValues == null) {
+            return solve(roverEpochs, baseEpochs, nav, opt);
+        }
+
+        // Step 2: Preprocess ALL epochs
+        List<EpochData> allEpochs = preprocessEpochs(roverEpochs, baseEpochs, nav, opt);
+        if (allEpochs.isEmpty()) return arResult;
+
+        int nf = FilterState.NF(opt);
+        int[][] refSatMap = chooseRefSats(allEpochs, opt, nf);
+
+        // Build DD ambiguity table for full-rate data
+        List<AmbParam> fullAmbParams = scanDdAmbiguities(allEpochs, opt, nf, refSatMap);
+        final int MIN_SEG_LEN = 4;
+        fullAmbParams.removeIf(ap -> (ap.endEpoch - ap.startEpoch + 1) < MIN_SEG_LEN);
+
+        // Map fixed integers from AR result to full-rate ambiguity params.
+        // Match by (refSat, sat, freq) — the integer value is the same
+        // regardless of which epochs were used.
+        double[] fixedAmb = new double[fullAmbParams.size()];
+        boolean[] isFixed = new boolean[fullAmbParams.size()];
+        int nFixed = 0;
+
+        for (int i = 0; i < fullAmbParams.size(); i++) {
+            AmbParam fp = fullAmbParams.get(i);
+            // Find matching AR result
+            for (int j = 0; j < arResult.ambParams.size(); j++) {
+                AmbParam ap = arResult.ambParams.get(j);
+                if (ap.refSat == fp.refSat && ap.sat == fp.sat && ap.freq == fp.freq) {
+                    // Check if this amb was fixed (integer value)
+                    double val = arResult.ambValues[j];
+                    double frac = Math.abs(val - Math.round(val));
+                    if (frac < 0.01) { // was fixed to integer
+                        fixedAmb[i] = Math.round(val);
+                        isFixed[i] = true;
+                        nFixed++;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (nFixed < 4) return arResult; // not enough fixed ambs
+
+        // Step 3: Position-only BLS with fixed integer ambiguities.
+        // Normal equation: N_pos = H'WH (3x3), b_pos = H'Wv (3x1)
+        // where v = dd_phase - lambda * N_fixed (known integer)
+        double[] pos = arResult.pos.clone(); // start from AR fix position
+        double[] savedMaxinno = {opt.maxinno[0], opt.maxinno[1]};
+        opt.maxinno[0] = 100.0; opt.maxinno[1] = 100.0;
+
+        // Iterate position (Gauss-Newton, typically 2-3 iterations)
+        for (int iter = 0; iter < MAX_ITER; iter++) {
+            double[] Npos = new double[9]; // 3x3
+            double[] bpos = new double[3];
+            int totalObs = 0;
+
+            double[] dr = new double[3];
+            double bl = Rtkpos.baseline(pos, opt.rb, dr);
+
+            for (int ep = 0; ep < allEpochs.size(); ep++) {
+                EpochData ed = allEpochs.get(ep);
+                if (ed.ns <= 0) continue;
+
+                // zdres
+                double[] yRov = new double[nf * 2 * ed.nu];
+                double[] eRov = new double[3 * ed.nu];
+                double[] azelRov = new double[2 * ed.nu];
+                double[] freqRov = new double[nf * ed.nu];
+                ObsData[] obsRov = new ObsData[ed.nu];
+                System.arraycopy(ed.obs, 0, obsRov, 0, ed.nu);
+                if (Rtkpos.zdres(0, obsRov, ed.nu, ed.rs, ed.dts, ed.var, ed.svh,
+                                  nav, pos, opt, yRov, eRov, azelRov, freqRov) == 0) continue;
+
+                ObsData[] obsBase = new ObsData[ed.nr];
+                System.arraycopy(ed.obs, ed.nu, obsBase, 0, ed.nr);
+                double[] rsB = new double[6*ed.nr]; System.arraycopy(ed.rs, ed.nu*6, rsB, 0, 6*ed.nr);
+                double[] dtB = new double[2*ed.nr]; System.arraycopy(ed.dts, ed.nu*2, dtB, 0, 2*ed.nr);
+                double[] vrB = new double[ed.nr]; System.arraycopy(ed.var, ed.nu, vrB, 0, ed.nr);
+                int[] svB = new int[ed.nr]; System.arraycopy(ed.svh, ed.nu, svB, 0, ed.nr);
+                double[] yBase = new double[nf*2*ed.nr], eBase = new double[3*ed.nr];
+                double[] azelBase = new double[2*ed.nr], freqBase = new double[nf*ed.nr];
+                if (Rtkpos.zdres(1, obsBase, ed.nr, rsB, dtB, vrB, svB,
+                                  nav, opt.rb, opt, yBase, eBase, azelBase, freqBase) == 0) continue;
+
+                // Form DD observations with fixed ambiguities
+                List<DdObs> ddObs = makeDdObs(ed, pos, opt, nav, nf,
+                        yRov, eRov, azelRov, freqRov,
+                        yBase, azelBase, freqBase,
+                        fullAmbParams, fixedAmb, ep, bl, refSatMap);
+
+                // Per-epoch outlier check: compute RMS of fixed phase residuals
+                // for this epoch. If too large, skip the entire epoch.
+                double epSumSq = 0; int epCount = 0;
+                for (DdObs dd : ddObs) {
+                    if (dd.isPhase && dd.ddAmbIdx >= 0 && isFixed[dd.ddAmbIdx]) {
+                        epSumSq += dd.v * dd.v;
+                        epCount++;
+                    }
+                }
+                double epRms = epCount > 0 ? Math.sqrt(epSumSq / epCount) : 0;
+                // Skip epoch if fixed-phase RMS > 0.05m (likely wrong integer mapping)
+                if (iter >= 1 && epRms > 0.05) continue;
+
+                for (DdObs dd : ddObs) {
+                    if (dd.isPhase && dd.ddAmbIdx >= 0 && !isFixed[dd.ddAmbIdx]) continue;
+
+                    double w = 1.0 / dd.var;
+
+                    for (int k = 0; k < 3; k++) {
+                        bpos[k] += dd.hPos[k] * w * dd.v;
+                        for (int l = k; l < 3; l++) {
+                            double val = dd.hPos[k] * w * dd.hPos[l];
+                            Npos[k + l * 3] += val;
+                            if (k != l) Npos[l + k * 3] += val;
+                        }
+                    }
+                    totalObs++;
+                }
+            }
+
+            if (totalObs < 3) break;
+
+            // Solve 3x3 system
+            double[] NposInv = Npos.clone();
+            if (MatrixUtil.matinv(NposInv, 3) != 0) break;
+
+            double[] dx = new double[3];
+            MatrixUtil.matmul("NN", 3, 1, 3, NposInv, bpos, dx);
+
+            pos[0] += dx[0]; pos[1] += dx[1]; pos[2] += dx[2];
+
+            double dpos = Math.sqrt(dx[0]*dx[0] + dx[1]*dx[1] + dx[2]*dx[2]);
+            if (dpos < CONV_THRESHOLD) break;
+        }
+
+        opt.maxinno[0] = savedMaxinno[0]; opt.maxinno[1] = savedMaxinno[1];
+
+        // Covariance from last iteration's N^-1
+        double[] Npos = new double[9], bpos = new double[3];
+        double[] dr2 = new double[3];
+        double bl2 = Rtkpos.baseline(pos, opt.rb, dr2);
+        int totalObs = 0;
+
+        for (int ep = 0; ep < allEpochs.size(); ep++) {
+            EpochData ed = allEpochs.get(ep);
+            if (ed.ns <= 0) continue;
+
+            double[] yR = new double[nf*2*ed.nu], eR = new double[3*ed.nu];
+            double[] azR = new double[2*ed.nu], frR = new double[nf*ed.nu];
+            ObsData[] oR = new ObsData[ed.nu]; System.arraycopy(ed.obs, 0, oR, 0, ed.nu);
+            if (Rtkpos.zdres(0, oR, ed.nu, ed.rs, ed.dts, ed.var, ed.svh,
+                              nav, pos, opt, yR, eR, azR, frR) == 0) continue;
+            ObsData[] oB = new ObsData[ed.nr]; System.arraycopy(ed.obs, ed.nu, oB, 0, ed.nr);
+            double[] rsB = new double[6*ed.nr]; System.arraycopy(ed.rs, ed.nu*6, rsB, 0, 6*ed.nr);
+            double[] dtB = new double[2*ed.nr]; System.arraycopy(ed.dts, ed.nu*2, dtB, 0, 2*ed.nr);
+            double[] vrB = new double[ed.nr]; System.arraycopy(ed.var, ed.nu, vrB, 0, ed.nr);
+            int[] svB = new int[ed.nr]; System.arraycopy(ed.svh, ed.nu, svB, 0, ed.nr);
+            double[] yB = new double[nf*2*ed.nr], eB = new double[3*ed.nr];
+            double[] azB = new double[2*ed.nr], frB = new double[nf*ed.nr];
+            if (Rtkpos.zdres(1, oB, ed.nr, rsB, dtB, vrB, svB,
+                              nav, opt.rb, opt, yB, eB, azB, frB) == 0) continue;
+
+            List<DdObs> ddObs = makeDdObs(ed, pos, opt, nav, nf,
+                    yR, eR, azR, frR, yB, azB, frB,
+                    fullAmbParams, fixedAmb, ep, bl2, refSatMap);
+
+            for (DdObs dd : ddObs) {
+                if (dd.isPhase && dd.ddAmbIdx >= 0 && !isFixed[dd.ddAmbIdx]) continue;
+                double w = 1.0 / dd.var;
+                for (int k = 0; k < 3; k++) {
+                    for (int l = k; l < 3; l++) {
+                        double val = dd.hPos[k] * w * dd.hPos[l];
+                        Npos[k + l * 3] += val;
+                        if (k != l) Npos[l + k * 3] += val;
+                    }
+                }
+                totalObs++;
+            }
+        }
+
+        float[] qr = new float[6];
+        double[] Qpp = Npos.clone();
+        if (MatrixUtil.matinv(Qpp, 3) == 0) {
+            qr[0] = (float)Qpp[0]; qr[1] = (float)Qpp[4]; qr[2] = (float)Qpp[8];
+            qr[3] = (float)Qpp[1]; qr[4] = (float)Qpp[5]; qr[5] = (float)Qpp[2];
+        }
+
+        // Post-fix validation: check DD phase residuals with fixed integers
+        java.util.Set<Integer> fixedSet = new java.util.HashSet<>();
+        for (int i = 0; i < fullAmbParams.size(); i++) {
+            if (isFixed[i]) fixedSet.add(i);
+        }
+        double postFixRms = computePostFixPhaseRms(allEpochs, fullAmbParams, nav, opt,
+                pos, fixedAmb, nf, refSatMap, fixedSet);
+
+        int ns = countSatellites(fullAmbParams);
+        if (postFixRms > 0.005) {
+            // Wrong fix: integers from 30s AR don't match 1Hz data
+            // (likely cycle slips between 30s sample points).
+            // Fall back to plain BLS.
+            return solve(roverEpochs, baseEpochs, nav, opt);
+        }
+
+        return new BatchResult(pos, qr, SOLQ_FIX, arResult.ratio, ns,
+                allEpochs.size(), fullAmbParams.size(), fixedAmb,
+                fullAmbParams);
+    }
+
     // ---------------------------------------------------------------
     // chooseRefSats: pick stable ref sat per (system, freq) across all epochs
     // ---------------------------------------------------------------
