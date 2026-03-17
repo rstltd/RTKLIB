@@ -526,7 +526,7 @@ public final class BatchSolver {
         List<List<Integer>> arComponents = findArComponents(arIdx, ambParams);
         int[] fixedOriginal = new int[nAR];
         Arrays.fill(fixedOriginal, Integer.MIN_VALUE);
-        float ratio = 0;
+        float ratio = 999.9f; // will be reduced to min of per-component ratios
         float bestCompRatio = 0;
 
         int compFixed = 0, compSkipped = 0, compFailed = 0;
@@ -544,40 +544,81 @@ public final class BatchSolver {
             }
 
             // Run WL/NL AR on this component
+            float[] compRatioOut = {0};
             int[] compFix = runComponentAr(aComp, QComp, cn, comp, ambParams,
-                    arIdx, opt);
+                    arIdx, opt, compRatioOut);
 
             if (compFix != null) {
                 compFixed++;
-                // Write fixed integers back to fixedOriginal
                 for (int i = 0; i < cn; i++) {
                     if (compFix[i] != Integer.MIN_VALUE) {
                         fixedOriginal[comp.get(i)] = compFix[i];
                     }
                 }
+                // Track minimum ratio across all fixed components
+                if (compRatioOut[0] > 0 && compRatioOut[0] < ratio) {
+                    ratio = compRatioOut[0];
+                }
             } else {
                 compFailed++;
             }
         }
-        // Count total fixed
+
+        // Per-component post-fix validation:
+        // Check each component's fixed ambs independently. Reject entire component
+        // if its DD phase residuals exceed threshold. This prevents a single bad
+        // component from being diluted by many good components in global RMS.
+        double pfThreshold = epochInterval <= 1.5 ? 0.015 : 0.05;
+        {
+            // Build fixedAmb array for validation
+            double[] valAmb = new double[nAmb];
+            System.arraycopy(ambValues, 0, valAmb, 0, nAmb);
+            for (int i = 0; i < nAR; i++) {
+                if (fixedOriginal[i] != Integer.MIN_VALUE) {
+                    valAmb[arIdx.get(i)] = fixedOriginal[i];
+                }
+            }
+
+            // Compute initial position for validation (use float pos)
+            double[] valPos = pos.clone();
+
+            for (List<Integer> comp : arComponents) {
+                // Collect this component's fixed indices
+                java.util.Set<Integer> compFixedSet = new java.util.HashSet<>();
+                for (int i : comp) {
+                    if (fixedOriginal[i] != Integer.MIN_VALUE) {
+                        compFixedSet.add(arIdx.get(i));
+                    }
+                }
+                if (compFixedSet.isEmpty()) continue;
+
+                // Per-component post-fix RMS
+                double compRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
+                        valPos, valAmb, nf, refSatMap, compFixedSet);
+
+                if (compRms > pfThreshold) {
+                    // Reject entire component
+                    for (int i : comp) {
+                        if (fixedOriginal[i] != Integer.MIN_VALUE) {
+                            fixedOriginal[i] = Integer.MIN_VALUE;
+                            valAmb[arIdx.get(i)] = ambValues[arIdx.get(i)];
+                        }
+                    }
+                }
+            }
+        }
+
+        // Count total fixed after per-component validation
         int totalFixed = 0;
         for (int i = 0; i < nAR; i++) {
             if (fixedOriginal[i] != Integer.MIN_VALUE) totalFixed++;
         }
 
-        // Minimum fix count: at least 8, but don't require nAR/3 for component AR
-        // (many small components are valid; the 1/3 rule was for monolithic PAR)
         if (totalFixed < 8) {
-            // Not enough fixed — clear and fall through to single-step PAR
             Arrays.fill(fixedOriginal, Integer.MIN_VALUE);
             totalFixed = 0;
-        } else {
-            // Compute effective ratio as minimum across components that contributed fixes
-            ratio = 999.9f; // will be reduced by per-component ratios
         }
 
-        // If component AR didn't produce enough fixes, set fixedOriginal to null
-        // to trigger fallback
         if (totalFixed == 0) {
             fixedOriginal = null;
         }
@@ -647,8 +688,8 @@ public final class BatchSolver {
 
                 double postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
                         posFix, fixedAmb, nf, refSatMap, fixedIndices);
-                // Post-fix threshold: tighter for high-rate data (more slips, more wrong-fix risk)
-                double pfThreshold = epochInterval <= 1.5 ? 0.008 : 0.05;
+                // Global post-fix threshold (per-component already done; this catches residual issues)
+                // Use same threshold as per-component validation
                 // Iterative recovery
                 int MAX_RECOVERY = Math.max(10, fixedIndices.size() / 10);
                 for (int rec = 0; rec < MAX_RECOVERY && postFixRms > pfThreshold; rec++) {
@@ -829,7 +870,7 @@ public final class BatchSolver {
             double postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
                     posFix, fixedAmb, nf, refSatMap, fixedIndices);
 
-            double pfThreshFallback = epochInterval <= 1.5 ? 0.008 : 0.05;
+            double pfThreshFallback = epochInterval <= 1.5 ? 0.015 : 0.05;
             if (postFixRms > pfThreshFallback) {
                 return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns,
                         epochs.size(), nAmb, ambValues, ambParams);
@@ -947,9 +988,13 @@ public final class BatchSolver {
      * @return fixed integers for each element in comp (Integer.MIN_VALUE = unfixed),
      *         or null if AR failed completely
      */
+    /**
+     * @param ratioOut if non-null, ratioOut[0] is set to the AR ratio achieved
+     */
     private static int[] runComponentAr(double[] aComp, double[] QComp, int cn,
                                          List<Integer> comp, List<AmbParam> ambParams,
-                                         List<Integer> arIdx, ProcessingOptions opt) {
+                                         List<Integer> arIdx, ProcessingOptions opt,
+                                         float[] ratioOut) {
 
         // Step 1: Pair L1/L5 ambiguities within this component
         List<int[]> dualPairs = new ArrayList<>();  // {compIdx_for_L1, compIdx_for_L5}
@@ -1139,6 +1184,7 @@ public final class BatchSolver {
                             result[sIdx] = nlFix;
                         }
                     }
+                    if (ratioOut != null) ratioOut[0] = bestRatioNL;
                     return result;
                 }
             }
@@ -1185,6 +1231,7 @@ public final class BatchSolver {
                     for (int i = 0; i < nTry; i++) {
                         result[sortOrder[i]] = (int) Math.round(Ftry[i]);
                     }
+                    if (ratioOut != null) ratioOut[0] = r;
                     return result;
                 }
             }
