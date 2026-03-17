@@ -531,7 +531,7 @@ public final class BatchSolver {
 
         int compFixed = 0, compSkipped = 0, compFailed = 0;
         for (List<Integer> comp : arComponents) {
-            if (comp.size() < 4) { compSkipped++; continue; } // too small for AR
+            if (comp.size() < 8) { compSkipped++; continue; } // too small for reliable AR
 
             // Extract component sub-block from QaaAR
             int cn = comp.size();
@@ -666,6 +666,16 @@ public final class BatchSolver {
                 System.arraycopy(pos, 0, posFix, 0, 3);
                 MatrixUtil.matmul("NN", 3, 1, bestNfix, -1.0, Qpa_ar, QaaInvDa, 1.0, posFix);
 
+                double fixCorr = Math.sqrt(
+                    (posFix[0]-pos[0])*(posFix[0]-pos[0]) +
+                    (posFix[1]-pos[1])*(posFix[1]-pos[1]) +
+                    (posFix[2]-pos[2])*(posFix[2]-pos[2]));
+                if (fixCorr > 0.050) {
+                    // Fix correction > 50mm is suspicious. Reject component AR result.
+                    fixedOriginal = null;
+                }
+
+                if (fixedOriginal != null) {
                 // Fixed covariance
                 float[] qrFix = new float[6];
                 double[] QpaQaaInv = new double[3 * bestNfix];
@@ -747,6 +757,7 @@ public final class BatchSolver {
                 }
                 // else fall through to single-step PAR
                 fixedOriginal = null;
+            }
             }
         }
 
@@ -995,6 +1006,18 @@ public final class BatchSolver {
                                          List<Integer> comp, List<AmbParam> ambParams,
                                          List<Integer> arIdx, ProcessingOptions opt,
                                          float[] ratioOut) {
+
+        // Quality gate: reject component if float ambiguity quality is poor
+        double sumAbsFrac = 0;
+        int badFracCount = 0;
+        for (int i = 0; i < cn; i++) {
+            double frac = Math.abs(aComp[i] - Math.round(aComp[i]));
+            sumAbsFrac += frac;
+            if (frac > 0.35) badFracCount++;
+        }
+        if (sumAbsFrac / cn > 0.25 || badFracCount > cn * 0.3) {
+            return null; // float quality too poor for reliable AR
+        }
 
         // Step 1: Pair L1/L5 ambiguities within this component
         List<int[]> dualPairs = new ArrayList<>();  // {compIdx_for_L1, compIdx_for_L5}
