@@ -155,7 +155,17 @@ public final class BatchSolver {
         // Remove short segments (< 4 epochs): too few observations to
         // reliably constrain a DD ambiguity parameter
         // Remove short segments (< 4 epochs): insufficient observation constraint
-        final int MIN_SEG_LEN = 4;
+        // Time-based minimum segment duration (30 seconds).
+        // For 30s data: 30s / 30s = 1 epoch minimum (effectively no filter beyond existing)
+        // For 1Hz data: 30s / 1s = 30 epochs minimum (eliminates fragmented segments)
+        double epochInterval = 30.0; // default
+        if (epochs.size() >= 2) {
+            double t0 = epochs.get(0).obs[0].time.time + epochs.get(0).obs[0].time.sec;
+            double t1 = epochs.get(1).obs[0].time.time + epochs.get(1).obs[0].time.sec;
+            epochInterval = Math.max(1.0, t1 - t0);
+        }
+        final double MIN_SEG_DURATION = 30.0; // seconds
+        final int MIN_SEG_LEN = Math.max(4, (int)(MIN_SEG_DURATION / epochInterval));
         ambParams.removeIf(ap -> (ap.endEpoch - ap.startEpoch + 1) < MIN_SEG_LEN);
 
         int nAmb = ambParams.size();
@@ -637,10 +647,11 @@ public final class BatchSolver {
 
                 double postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
                         posFix, fixedAmb, nf, refSatMap, fixedIndices);
-                // Iterative recovery: remove worst fixed amb until validation passes
-                // For component AR with many components, allow more recovery iterations
+                // Post-fix threshold: tighter for high-rate data (more slips, more wrong-fix risk)
+                double pfThreshold = epochInterval <= 1.5 ? 0.008 : 0.05;
+                // Iterative recovery
                 int MAX_RECOVERY = Math.max(10, fixedIndices.size() / 10);
-                for (int rec = 0; rec < MAX_RECOVERY && postFixRms > 0.05; rec++) {
+                for (int rec = 0; rec < MAX_RECOVERY && postFixRms > pfThreshold; rec++) {
                     int worstFullIdx = findWorstFixedAmb(epochs, ambParams, nav, opt,
                             posFix, fixedAmb, nf, refSatMap, fixedIndices);
                     if (worstFullIdx < 0) break;
@@ -689,7 +700,7 @@ public final class BatchSolver {
                             posFix, fixedAmb, nf, refSatMap, fixedIndices);
                 }
 
-                if (postFixRms <= 0.05) {
+                if (postFixRms <= pfThreshold) {
                     return new BatchResult(posFix, qrFix, SOLQ_FIX, ratio, ns,
                             epochs.size(), nAmb, ambValues, ambParams);
                 }
@@ -818,7 +829,8 @@ public final class BatchSolver {
             double postFixRms = computePostFixPhaseRms(epochs, ambParams, nav, opt,
                     posFix, fixedAmb, nf, refSatMap, fixedIndices);
 
-            if (postFixRms > 0.05) {
+            double pfThreshFallback = epochInterval <= 1.5 ? 0.008 : 0.05;
+            if (postFixRms > pfThreshFallback) {
                 return new BatchResult(pos, qr, SOLQ_FLOAT, ratio, ns,
                         epochs.size(), nAmb, ambValues, ambParams);
             }
