@@ -167,5 +167,20 @@ public class PppState extends FilterState {
 
         /** Visible flag */
         public int vs;
+
+        // --- PPP-AR wide-lane tracking ---
+
+        /** MW running average per frequency pair (cycles, OSB-corrected) */
+        public double[] mwAvg = new double[NFREQ - 1];
+
+        /** MW epoch count per frequency pair */
+        public int[] mwCount = new int[NFREQ - 1];
+
+        /** Fixed WL integer per frequency pair (Integer.MIN_VALUE = unfixed) */
+        public int[] wlFixed = new int[NFREQ - 1];
+
+        {
+            java.util.Arrays.fill(wlFixed, Integer.MIN_VALUE);
+        }
     }
 }

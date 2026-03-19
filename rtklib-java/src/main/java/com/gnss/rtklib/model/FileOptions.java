@@ -16,4 +16,5 @@ public class FileOptions {
     public String geexe   = "";   // file-geexefile
     public String solstat = "";   // file-solstatfile
     public String trace   = "";   // file-tracefile
+    public String biasfile = "";  // file-biasfile (SINEX BIA phase bias)
 }

@@ -133,7 +133,38 @@ public final class Pppos {
         else if (iterFinal == -3) diagFilterErr++;
         else if (stat != SOLQ_PPP) diagIterOverflow++;
 
-        if (stat == SOLQ_PPP) {
+        // PPP-AR: attempt integer ambiguity resolution
+        if (stat == SOLQ_PPP && opt.modear >= 1 && PpposAr.hasAnyPhaseBias(nav)) {
+            double[] xpAr = xp.clone();
+            double[] PpAr = Pp.clone();
+            if (PpposAr.pppAr(rtk, obs, n, nav, azel, xpAr, PpAr)) {
+                // Post-fix validation: check residuals with fixed state
+                if (pppRes(9, obs, n, rs, dts, varRs, svh, dr, exc, nav, xpAr, rtk,
+                           null, null, null, azel) != 0) {
+                    // Copy fixed state to xa
+                    int na = rtk.na;
+                    System.arraycopy(xpAr, 0, rtk.xa, 0, na);
+                    for (int ii = 0; ii < na; ii++) {
+                        for (int jj = 0; jj < na; jj++) {
+                            rtk.Pa[ii + jj * na] = PpAr[ii + jj * rtk.nx];
+                        }
+                    }
+
+                    // Check 3D position std
+                    double norm3d = Math.sqrt(PpAr[0] + PpAr[1 + rtk.nx] + PpAr[2 + 2 * rtk.nx]);
+                    if (norm3d < 0.15) {
+                        // Use fixed position for solution output
+                        System.arraycopy(xpAr, 0, xp, 0, 3);
+                        System.arraycopy(PpAr, 0, Pp, 0, rtk.nx * rtk.nx);
+                        System.arraycopy(xp, 0, rtk.x, 0, rtk.nx);
+                        System.arraycopy(Pp, 0, rtk.P, 0, rtk.nx * rtk.nx);
+                        stat = SOLQ_FIX;
+                    }
+                }
+            }
+        }
+
+        if (stat == SOLQ_PPP || stat == SOLQ_FIX) {
             updateStat(rtk, obs, n, stat);
             int ns = rtk.sol.ns;
             if (ns < diagNsHist.length) diagNsHist[ns]++;
@@ -468,6 +499,19 @@ public final class Pppos {
         detslpGf(rtk, obs, n, nav);
         detslpMw(rtk, obs, n, nav);
 
+        // Reset MW averaging on cycle slip (for PPP-AR)
+        for (int i = 0; i < n && i < MAXOBS; i++) {
+            int sat = obs[i].sat;
+            PppState.SatState ss = rtk.ssat[sat - 1];
+            if ((ss.slip[0] | (rtk.opt.nf > 1 ? ss.slip[1] : 0)) != 0) {
+                for (int p = 0; p < NFREQ - 1; p++) {
+                    ss.mwAvg[p] = 0.0;
+                    ss.mwCount[p] = 0;
+                    ss.wlFixed[p] = Integer.MIN_VALUE;
+                }
+            }
+        }
+
         for (int f = 0; f < NF(rtk.opt); f++) {
             // Reset phase-bias if outage counter exceeded
             for (int i = 0; i < MAXSAT; i++) {
@@ -666,7 +710,7 @@ public final class Pppos {
      * @return post mode: 1 if converged (no large outlier), 0 otherwise.
      *         pre mode: number of valid measurements.
      */
-    private static int pppRes(int post, ObsData[] obs, int n,
+    static int pppRes(int post, ObsData[] obs, int n,
                                double[] rs, double[] dts, double[] varRs,
                                int[] svh, double[] dr, int[] exc,
                                Navigation nav, double[] x, PppState rtk,
@@ -709,6 +753,8 @@ public final class Pppos {
             if (r <= 0.0) { exc[i] = 1; continue; }
 
             double el = Geometry.satazel(pos, e, azel, i * 2);
+            rtk.ssat[sat - 1].azel[0] = azel[i * 2];
+            rtk.ssat[sat - 1].azel[1] = azel[i * 2 + 1];
             if (el < opt.elmin) { exc[i] = 1; continue; }
 
             int sys = SatelliteUtil.satsys(sat)[0];

@@ -253,6 +253,7 @@ public class ConfigReader {
         opts.add(strOpt("file-geexefile",   "", v -> fopt.geexe = v));
         opts.add(strOpt("file-solstatfile", "", v -> fopt.solstat = v));
         opts.add(strOpt("file-tracefile",   "", v -> fopt.trace = v));
+        opts.add(strOpt("file-biasfile",   "", v -> fopt.biasfile = v));
 
         return opts;
     }

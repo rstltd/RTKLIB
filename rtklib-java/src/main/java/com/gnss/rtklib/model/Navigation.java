@@ -77,7 +77,23 @@ public class Navigation {
     /** Earth rotation parameters: {xp, yp, ut1_utc, lod} (rad, rad, s, s/d) */
     public double[] erpv = new double[5];
 
+    /**
+     * Satellite phase biases (m) from SINEX BIA / OSB products.
+     * Dimensions: [MAXSAT][MAXCODE + 1].
+     * Index: [sat-1][CODE_xxx] = phase bias in meters.
+     */
+    public double[][] pbias;
+
+    /**
+     * Satellite code biases (m) from SINEX BIA / OSB products.
+     * Dimensions: [MAXSAT][MAXCODE + 1].
+     * Index: [sat-1][CODE_xxx] = code bias in meters.
+     */
+    public double[][] cbias_osb;
+
     public Navigation() {
         cbias = new double[Constants.MAXSAT][Constants.MAX_CODE_BIAS_FREQS][Constants.MAX_CODE_BIASES];
+        pbias = new double[Constants.MAXSAT][Constants.MAXCODE + 1];
+        cbias_osb = new double[Constants.MAXSAT][Constants.MAXCODE + 1];
     }
 }

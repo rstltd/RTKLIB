@@ -36,10 +36,11 @@ public final class Sp3Reader {
             double[] bfact = new double[2];
             int[] sats = new int[MAXSAT];
             char[] type = {'P'};
-            int ns = readSp3Header(br, sats, bfact, tsys, type);
+            String[] firstEpochLine = {null};
+            int ns = readSp3Header(br, sats, bfact, tsys, type, firstEpochLine);
 
             // Parse body
-            readSp3Body(br, type[0], ns, bfact, tsys[0], 0, nav);
+            readSp3Body(br, type[0], ns, bfact, tsys[0], 0, nav, firstEpochLine[0]);
         }
 
         // Sort by time
@@ -54,51 +55,84 @@ public final class Sp3Reader {
         combPeph(nav);
     }
 
+    /**
+     * Read SP3 header. Returns ns (number of satellites).
+     * firstEpochLine[0] is set to the first epoch line ('*' line) if found during header parsing.
+     */
     private static int readSp3Header(BufferedReader br, int[] sats, double[] bfact,
-                                      String[] tsys, char[] type) throws IOException {
-        int i = 0, k = 0, ns = 0, nl = 5;
+                                      String[] tsys, char[] type,
+                                      String[] firstEpochLine) throws IOException {
+        int k = 0, ns = 0;
+        boolean tsysRead = false;
+        boolean bfactRead = false;
         String line;
 
         while ((line = br.readLine()) != null) {
-            if (line.length() < 2) { i++; continue; }
+            if (line.length() < 2) continue;
 
-            if (line.charAt(0) == '#' && (line.charAt(1) == 'c' || line.charAt(1) == 'd')) {
+            char c0 = line.charAt(0);
+            char c1 = line.charAt(1);
+
+            if (c0 == '#' && (c1 == 'c' || c1 == 'd')) {
                 type[0] = line.charAt(2);
-            } else if (line.charAt(0) == '+' && line.charAt(1) == ' ') {
-                if (i == 2) {
+            } else if (c0 == '+' && c1 == ' ') {
+                // Satellite list line
+                if (ns == 0 && line.length() >= 6) {
                     ns = parseInt(line, 3, 3);
-                    if (ns > 85) nl = ns / 17 + (ns % 17 != 0 ? 1 : 0);
                 }
                 for (int j = 0; j < 17 && k < ns; j++) {
                     int sys = code2sys(safeChar(line, 9 + 3 * j));
+                    if (sys == 0) { k++; continue; } // padding '0' or ' '
                     int prn = parseInt(line, 10 + 3 * j, 2);
                     if (k < MAXSAT) {
                         int sat = SatelliteUtil.satno(sys, prn);
                         if (sat > 0) sats[k] = sat;
-                        k++;
                     }
+                    k++;
                 }
-            } else if (i == 2 * nl + 2) { // %c line
-                if (line.length() >= 12) tsys[0] = line.substring(9, 12).trim();
-            } else if (i == 2 * nl + 4) { // %f line
-                bfact[0] = parseDouble(line, 3, 10);
-                bfact[1] = parseDouble(line, 14, 12);
-            } else if (i == 2 * nl + 11) {
-                break; // end of header
+            } else if (c0 == '+' && c1 == '+') {
+                // Accuracy lines — skip
+            } else if (c0 == '%' && c1 == 'c') {
+                if (!tsysRead && line.length() >= 12) {
+                    tsys[0] = line.substring(9, 12).trim();
+                    tsysRead = true;
+                }
+            } else if (c0 == '%' && c1 == 'f') {
+                if (!bfactRead) {
+                    bfact[0] = parseDouble(line, 3, 10);
+                    bfact[1] = parseDouble(line, 14, 12);
+                    bfactRead = true;
+                }
+            } else if (c0 == '%' && c1 == 'i') {
+                // Comment lines — skip
+            } else if (c0 == '/' && c1 == '*') {
+                // Comment lines — skip
+            } else if (c0 == '*') {
+                // First epoch line — header is done, pass it back
+                firstEpochLine[0] = line;
+                break;
             }
-            i++;
         }
         return ns;
     }
 
     private static void readSp3Body(BufferedReader br, char type, int ns,
                                      double[] bfact, String tsys, int index,
-                                     Navigation nav) throws IOException {
+                                     Navigation nav, String firstEpochLine) throws IOException {
         int n = ns * (type == 'P' ? 1 : 2);
-        String line;
+        String line = firstEpochLine;
         boolean isUtc = "UTC".equals(tsys);
+        boolean firstLine = (line != null && line.length() > 0 && line.charAt(0) == '*');
 
-        while ((line = br.readLine()) != null) {
+        if (!firstLine) line = null;
+
+        while (true) {
+            if (!firstLine) {
+                line = br.readLine();
+                if (line == null) break;
+            }
+            firstLine = false;
+
             if (line.startsWith("EOF")) break;
 
             // Look for epoch line

@@ -3,6 +3,7 @@ package com.gnss.rtklib;
 import com.gnss.rtklib.core.GTime;
 import com.gnss.rtklib.core.MatrixUtil;
 import com.gnss.rtklib.io.AntexReader;
+import com.gnss.rtklib.io.BiasReader;
 import com.gnss.rtklib.io.ClkReader;
 import com.gnss.rtklib.io.ConfigReader;
 import com.gnss.rtklib.io.RinexReader;
@@ -388,12 +389,25 @@ public class PostProcessor {
 
     /**
      * Process PPP (Precise Point Positioning) using precise ephemeris/clock files.
+     * Overload without bias file for backward compatibility.
+     */
+    public static int processPpp(String obsFile, String navFile,
+                                   String sp3File, String clkFile,
+                                   String atxFile, String outFile,
+                                   ProcessingOptions popt,
+                                   SolutionOptions sopt) {
+        return processPpp(obsFile, navFile, sp3File, clkFile, atxFile, null, outFile, popt, sopt);
+    }
+
+    /**
+     * Process PPP (Precise Point Positioning) using precise ephemeris/clock files.
      *
      * @param obsFile  path to RINEX observation file
      * @param navFile  path to RINEX navigation file (for SPP initial position)
      * @param sp3File  path to SP3 precise ephemeris file
      * @param clkFile  path to RINEX CLK file (may be null to use SP3 clocks)
      * @param atxFile  path to ANTEX antenna file (may be null)
+     * @param biaFile  path to SINEX BIA phase bias file (may be null)
      * @param outFile  path to output .pos file
      * @param popt     processing options
      * @param sopt     solution output options
@@ -401,7 +415,8 @@ public class PostProcessor {
      */
     public static int processPpp(String obsFile, String navFile,
                                    String sp3File, String clkFile,
-                                   String atxFile, String outFile,
+                                   String atxFile, String biaFile,
+                                   String outFile,
                                    ProcessingOptions popt,
                                    SolutionOptions sopt) {
         Navigation nav = new Navigation();
@@ -444,6 +459,21 @@ public class PostProcessor {
                                   atxFile, e.getMessage());
             }
             System.err.printf("antex: %d antenna models loaded%n", nav.pcvs.size());
+        }
+
+        // Read BIA phase bias (optional)
+        if (biaFile != null && !biaFile.isEmpty()) {
+            try {
+                BiasReader.readBias(biaFile, nav);
+            } catch (Exception e) {
+                System.err.printf("warning: failed to read bias file: %s (%s)%n",
+                                  biaFile, e.getMessage());
+            }
+            int cnt = 0;
+            for (int ii = 0; ii < MAXSAT; ii++)
+                for (int jj = 1; jj <= MAXCODE; jj++)
+                    if (nav.pbias[ii][jj] != 0.0) cnt++;
+            System.err.printf("bias: %d satellite phase biases loaded%n", cnt);
         }
 
         // Read observations
@@ -742,6 +772,7 @@ public class PostProcessor {
         String sp3File = null;
         String clkFile = null;
         String atxFile = null;
+        String biaFile = null;
 
 
 
@@ -792,6 +823,8 @@ public class PostProcessor {
                 clkFile = args[++i];
             } else if (arg.equals("-atx") && i + 1 < args.length) {
                 atxFile = args[++i];
+            } else if (arg.equals("-bia") && i + 1 < args.length) {
+                biaFile = args[++i];
             } else if (arg.equals("-rb") && i + 1 < args.length) {
                 String[] xyz = args[++i].split(",");
                 if (xyz.length >= 3) {
@@ -823,6 +856,9 @@ public class PostProcessor {
         if (atxFile == null && !fopt.satantp.isEmpty()) {
             atxFile = fopt.satantp;
         }
+        if (biaFile == null && !fopt.biasfile.isEmpty()) {
+            biaFile = fopt.biasfile;
+        }
 
         // Validate required arguments
         if (obsFile == null || navFile == null) {
@@ -840,7 +876,7 @@ public class PostProcessor {
 
         int ret;
         if (popt.mode >= PMODE_PPP_KINEMA && popt.mode <= PMODE_PPP_FIXED && sp3File != null) {
-            ret = processPpp(obsFile, navFile, sp3File, clkFile, atxFile, outFile, popt, sopt);
+            ret = processPpp(obsFile, navFile, sp3File, clkFile, atxFile, biaFile, outFile, popt, sopt);
         } else if (popt.mode >= PMODE_KINEMA && popt.mode <= PMODE_STATIC_START && baseObsFile != null) {
             ret = processRtk(obsFile, baseObsFile, navFile, outFile, popt, sopt);
         } else {
@@ -886,6 +922,7 @@ public class PostProcessor {
         System.err.println("  -sp3 file  SP3 precise ephemeris file");
         System.err.println("  -clk file  RINEX clock file");
         System.err.println("  -atx file  ANTEX antenna file");
+        System.err.println("  -bia file  SINEX BIA phase bias file (for PPP-AR)");
         System.err.println("  -rb x,y,z  base station position ECEF (m)");
 
         System.err.println();
