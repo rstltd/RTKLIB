@@ -4,6 +4,14 @@
 *.obs
 *.ini
 *.local
+*.trace
+
+# Java
+rtklib-java/target/
+
+# Large test data (RINEX observations, SP3/CLK, static datasets)
+test/data/static/
+test/data/ppp/
 Release
 Release_Build
 Debug

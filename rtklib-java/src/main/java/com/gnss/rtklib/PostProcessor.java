@@ -16,7 +16,6 @@ import com.gnss.rtklib.model.ProcessingOptions;
 import com.gnss.rtklib.model.RtkState;
 import com.gnss.rtklib.model.Solution;
 import com.gnss.rtklib.model.SolutionOptions;
-import com.gnss.rtklib.positioning.BatchSolver;
 import com.gnss.rtklib.positioning.Pppos;
 import com.gnss.rtklib.positioning.Rtkpos;
 import com.gnss.rtklib.positioning.Spp;
@@ -296,31 +295,7 @@ public class PostProcessor {
             SolutionWriter.writeHeader(out, popt, sopt);
         }
 
-        // Batch solver mode
-        if (popt.solver == ProcessingOptions.SOLVER_BATCH) {
-            BatchSolver.BatchResult bres = BatchSolver.solve(roverEpochs, baseEpochs, nav, popt);
-            Solution sol = new Solution();
-            sol.stat = bres.stat;
-            sol.ratio = bres.ratio;
-            sol.ns = bres.ns;
-            System.arraycopy(bres.pos, 0, sol.rr, 0, 3);
-            System.arraycopy(bres.qr, 0, sol.qr, 0, 6);
-            if (!roverEpochs.isEmpty() && !roverEpochs.get(0).isEmpty()) {
-                sol.time = roverEpochs.get(0).get(0).time;
-            }
-            if (sol.stat != SOLQ_NONE) {
-                SolutionWriter.writeSolution(out, sol, popt.rb, sopt);
-            }
-            System.err.printf("batch: %d epochs, %d amb params, stat=%d, ratio=%.1f%n",
-                              bres.nEpochs, bres.nAmb, bres.stat, bres.ratio);
 
-            if (outFile != null && !outFile.isEmpty()) {
-                out.close();
-            } else {
-                out.flush();
-            }
-            return 0;
-        }
 
         // Create RTK state and epoch processor
         RtkState[] rtkHolder = { new RtkState() };
