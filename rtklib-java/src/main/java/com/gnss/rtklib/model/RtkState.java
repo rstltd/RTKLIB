@@ -85,7 +85,7 @@ public class RtkState extends FilterState {
 
     /** Number of GLO receiver h/w bias states (NL) */
     public static int NL(ProcessingOptions opt) {
-        return opt.glomodear != 2 ? 0 : NFREQ; // GLO_ARMODE_AUTOCAL=2
+        return opt.glomodear != 2 ? 0 : 2; // GLO_ARMODE_AUTOCAL=2, NFREQGLO=2
     }
 
     /** Number of phase bias states (NB) */

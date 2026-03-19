@@ -286,7 +286,8 @@ public final class Pppos {
      * Ported from preceph.c satantoff().
      * @param dant output: ECEF offset [3] (m)
      */
-    static void satantoff(GTime time, double[] rs, int sat, Navigation nav, double[] dant) {
+    static void satantoff(GTime time, double[] rs, int sat, Navigation nav,
+                          int iflcF2, double[] dant) {
         dant[0] = dant[1] = dant[2] = 0.0;
 
         // Find antenna model for this satellite
@@ -308,15 +309,23 @@ public final class Pppos {
         if (SunMoonPos.normv3(r, ey) <= 0.0) return;
         MatrixUtil.cross3(ey, ez, ex);
 
-        // IFLC coefficients
+        // IFLC coefficients — use iflcF2 to select actual second frequency
         int sys = SatelliteUtil.satsys(sat)[0];
         double[] freq = new double[2];
-        if (sys == SYS_GPS || sys == SYS_QZS) { freq[0] = FREQL1; freq[1] = FREQL2; }
-        else if (sys == SYS_GLO) { freq[0] = SignalUtil.sat2freq(sat, CODE_L1C, nav); freq[1] = SignalUtil.sat2freq(sat, CODE_L2C, nav); }
-        else if (sys == SYS_GAL) { freq[0] = FREQL1; freq[1] = FREQE5b; }
-        else if (sys == SYS_CMP) { freq[0] = FREQ1_CMP; freq[1] = FREQ2_CMP; }
-        else if (sys == SYS_IRN) { freq[0] = FREQL5; freq[1] = FREQs; }
-        else return;
+        if (sys == SYS_GPS || sys == SYS_QZS) {
+            freq[0] = FREQL1;
+            freq[1] = (iflcF2 == 2) ? FREQL5 : FREQL2;
+        } else if (sys == SYS_GLO) {
+            freq[0] = SignalUtil.sat2freq(sat, CODE_L1C, nav);
+            freq[1] = SignalUtil.sat2freq(sat, CODE_L2C, nav);
+        } else if (sys == SYS_GAL) {
+            freq[0] = FREQL1;
+            freq[1] = (iflcF2 == 2) ? FREQL5 : FREQE5b;
+        } else if (sys == SYS_CMP) {
+            freq[0] = FREQ1_CMP; freq[1] = FREQ2_CMP;
+        } else if (sys == SYS_IRN) {
+            freq[0] = FREQL5; freq[1] = FREQs;
+        } else return;
 
         if (freq[0] == 0.0 || freq[1] == 0.0) return;
         double C1 = sq(freq[0]) / (sq(freq[0]) - sq(freq[1]));
@@ -325,7 +334,7 @@ public final class Pppos {
         // IFLC antenna offset
         for (int i = 0; i < 3; i++) {
             double dant1 = pcv.off[0][0] * ex[i] + pcv.off[0][1] * ey[i] + pcv.off[0][2] * ez[i];
-            double dant2 = (NFREQ > 1) ? pcv.off[1][0] * ex[i] + pcv.off[1][1] * ey[i] + pcv.off[1][2] * ez[i] : 0.0;
+            double dant2 = (iflcF2 < NFREQ) ? pcv.off[iflcF2][0] * ex[i] + pcv.off[iflcF2][1] * ey[i] + pcv.off[iflcF2][2] * ez[i] : 0.0;
             dant[i] = C1 * dant1 + C2 * dant2;
         }
     }
@@ -713,7 +722,7 @@ public final class Pppos {
                     exc[i] = 1; continue;
                 }
                 if (opt.ionoopt == IONOOPT_IFLC) {
-                    int f2 = Spp.seliflc(opt.nf, sys);
+                    int f2 = Spp.seliflc(opt.nf, sys, obs[i]);
                     if (Spp.testsnr(0, 0, azel[i * 2 + 1], obs[i].SNR[f2], opt.snrmask)) {
                         exc[i] = 1; continue;
                     }
@@ -723,7 +732,8 @@ public final class Pppos {
             // Satellite antenna offset (Step 6)
             double[] dants = new double[NFREQ];
             if (opt.posopt[0] != 0 && !nav.pcvs.isEmpty()) {
-                satantoff(obs[i].time, rs, sat, nav, dants);
+                int satF2 = Spp.seliflc(opt.nf, sys, obs[i]);
+                satantoff(obs[i].time, rs, sat, nav, satF2, dants);
                 // Apply ECEF offset to geometric range
                 r += dants[0] * e[0] + dants[1] * e[1] + dants[2] * e[2];
                 // Reset dants for corrMeas (already applied to range)

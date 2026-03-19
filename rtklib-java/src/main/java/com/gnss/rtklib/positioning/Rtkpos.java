@@ -38,8 +38,9 @@ public final class Rtkpos {
     private static final int    ARMODE_INST      = 2;
     private static final int    ARMODE_FIXHOLD   = 3;
     private static final int    GLO_ARMODE_OFF      = 0;
-    private static final int    GLO_ARMODE_FIXHOLD  = 1;
+    private static final int    GLO_ARMODE_ON       = 1;
     private static final int    GLO_ARMODE_AUTOCAL  = 2;
+    private static final int    GLO_ARMODE_FIXHOLD  = 3;
     private static final int    NFREQGLO = 2;
     private static final int    NSYS     = 6;
     private static final int    POSOPT_RINEX = 4;
@@ -451,7 +452,7 @@ public final class Rtkpos {
                 int slip = rtk.ssat[sat[i] - 1].slip[k];
                 int rejc = rtk.ssat[sat[i] - 1].rejc[k];
                 if (rtk.opt.ionoopt == IONOOPT_IFLC) {
-                    int f2 = Spp.seliflc(rtk.opt.nf, rtk.ssat[sat[i] - 1].sys);
+                    int f2 = Spp.seliflc(rtk.opt.nf, rtk.ssat[sat[i] - 1].sys, obs[iu[i]]);
                     slip |= rtk.ssat[sat[i] - 1].slip[f2];
                 }
 
@@ -476,7 +477,7 @@ public final class Rtkpos {
                     bias[i] = cp - pr * freqi / CLIGHT;
                 } else {
                     // IFLC: use iono-free combination of two frequencies
-                    int f2 = Spp.seliflc(rtk.opt.nf, rtk.ssat[sat[i] - 1].sys);
+                    int f2 = Spp.seliflc(rtk.opt.nf, rtk.ssat[sat[i] - 1].sys, obs[iu[i]]);
                     double cp1 = sdobs(obs, iu[i], ir[i], 0);
                     double cp2 = sdobs(obs, iu[i], ir[i], f2);
                     double pr1 = sdobs(obs, iu[i], ir[i], NFREQ);
@@ -535,6 +536,10 @@ public final class Rtkpos {
                 udtrop(rtk, tt);
             }
         }
+        // receiver h/w bias update (GLONASS AUTOCAL)
+        if (rtk.opt.glomodear == GLO_ARMODE_AUTOCAL && (rtk.opt.navsys & SYS_GLO) != 0) {
+            udrcvbias(rtk, tt);
+        }
         // phase bias update
         if (rtk.opt.mode > PMODE_DGPS) {
             udbias(rtk, tt, obs, sat, iu, ir, ns, nav);
@@ -590,6 +595,26 @@ public final class Rtkpos {
     }
 
     // ---------------------------------------------------------------
+    // udrcvbias: temporal update of receiver h/w bias (GLONASS AUTOCAL)
+    // ---------------------------------------------------------------
+
+    private static void udrcvbias(RtkState rtk, double tt) {
+        for (int i = 0; i < NFREQGLO; i++) {
+            int j = RtkState.IL(i, rtk.opt);
+            if (rtk.x[j] == 0.0) {
+                // initialize with small offset to avoid zero
+                rtk.initx(rtk.opt.thresar[2] + 1e-6, rtk.opt.thresar[3], j);
+            } else if (rtk.nfix >= rtk.opt.minfix) {
+                // hold to fixed solution
+                rtk.initx(rtk.xa[j], rtk.Pa[j + j * rtk.na], j);
+            } else {
+                // process noise
+                rtk.P[j + j * rtk.nx] += SQR(rtk.opt.thresar[4]) * Math.abs(tt);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
     // zdres_sat: undifferenced residual for one satellite
     // ---------------------------------------------------------------
 
@@ -601,7 +626,7 @@ public final class Rtkpos {
         if (opt.ionoopt == IONOOPT_IFLC) {
             // Iono-free linear combination (ported from rtkpos.c:969-1005)
             double freq1 = SignalUtil.sat2freq(obs.sat, obs.code[0], nav);
-            int f2 = Spp.seliflc(opt.nf, SatelliteUtil.satsys(obs.sat)[0]);
+            int f2 = Spp.seliflc(opt.nf, SatelliteUtil.satsys(obs.sat)[0], obs);
             double freq2 = SignalUtil.sat2freq(obs.sat, obs.code[f2], nav);
 
             if (freq1 == 0.0 || freq2 == 0.0) return;
@@ -841,7 +866,13 @@ public final class Rtkpos {
 
                     // GLONASS inter-channel bias
                     if (sysi == SYS_GLO && sysj == SYS_GLO) {
-                        if (rtk.opt.glomodear == GLO_ARMODE_FIXHOLD && frq < NFREQGLO) {
+                        if (rtk.opt.glomodear == GLO_ARMODE_AUTOCAL && frq < NFREQGLO) {
+                            // auto-cal: estimate h/w bias (m/MHz) in EKF state
+                            double df = (freqi - freqj) / (frq == 0 ? DFRQ1_GLO : DFRQ2_GLO);
+                            v[nv] -= df * x[RtkState.IL(frq, opt)];
+                            if (Hi != null) Hi[RtkState.IL(frq, opt)] = df;
+                        } else if (rtk.opt.glomodear == GLO_ARMODE_FIXHOLD && frq < NFREQGLO) {
+                            // fix-and-hold: apply accumulated ICB correction
                             double icb = rtk.ssat[sat[refIdx] - 1].icbias[frq] * CLIGHT / freqi
                                        - rtk.ssat[sat[j] - 1].icbias[frq] * CLIGHT / freqj;
                             v[nv] -= icb;

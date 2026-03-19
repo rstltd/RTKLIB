@@ -203,7 +203,7 @@ public final class Spp {
             return false;
         }
         if (opt.ionoopt == IONOOPT_IFLC) {
-            int f2 = seliflc(opt.nf, SatelliteUtil.satsys(obs.sat)[0]);
+            int f2 = seliflc(opt.nf, SatelliteUtil.satsys(obs.sat)[0], obs);
             if (testsnr(0, f2, azel[azelOff + 1], obs.SNR[f2], opt.snrmask)) {
                 return false;
             }
@@ -251,13 +251,38 @@ public final class Spp {
      * Select second frequency index for iono-free combination.
      * <p>
      * Ported from rtkcmn.c seliflc() lines 3741-3745.
+     * Extended: falls back to L5 (f=2) when L2 (f=1) is unavailable,
+     * supporting GPS L1+L5 receivers.
      *
      * @param optnf number of frequencies option
      * @param sys   satellite system
      * @return second frequency index (1 or 2)
      */
     public static int seliflc(int optnf, int sys) {
-        return (optnf == 2 || sys != SYS_GAL) ? 1 : 2;
+        // Galileo with L5 enabled: always use E5a (f=2)
+        if (optnf >= 3 && sys == SYS_GAL) return 2;
+        // Default: L2 (f=1)
+        return 1;
+    }
+
+    /**
+     * Select second frequency index with observation-aware fallback.
+     * When L2 has no data but L5 does, falls back to L5 for IFLC.
+     *
+     * @param optnf number of frequencies option
+     * @param sys   satellite system
+     * @param obs   observation data (to check L/P availability)
+     * @return second frequency index (1 or 2)
+     */
+    public static int seliflc(int optnf, int sys, ObsData obs) {
+        int f2 = seliflc(optnf, sys);
+        // Fallback: if L2 has no phase/code but L5 does, use L5
+        if (f2 == 1 && optnf >= 3 && obs != null) {
+            boolean l2empty = (obs.L[1] == 0.0 && obs.P[1] == 0.0);
+            boolean l5avail = (obs.L[2] != 0.0 || obs.P[2] != 0.0);
+            if (l2empty && l5avail) return 2;
+        }
+        return f2;
     }
 
     /**
@@ -303,7 +328,7 @@ public final class Spp {
         int sat = obs.sat;
         int sys = SatelliteUtil.satsys(sat)[0];
         double P1 = obs.P[0];
-        int f2 = seliflc(opt.nf, sys);
+        int f2 = seliflc(opt.nf, sys, obs);
         double P2 = obs.P[f2];
         var[0] = 0.0;
 
