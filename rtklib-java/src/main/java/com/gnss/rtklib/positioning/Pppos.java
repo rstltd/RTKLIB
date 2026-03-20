@@ -31,6 +31,7 @@ public final class Pppos {
     // Diagnostic counters (for testing)
     public static int diagNoObs, diagFilterErr, diagIterOverflow, diagOk, diagNsLow;
     public static int[] diagNsHist = new int[20];
+    public static int diagArRejPosDiff, diagArRejStd; // AR rejection counters
 
     private static final double VAR_POS  = 3600.0;   // 60^2
     private static final double VAR_VEL  = 100.0;     // 10^2
@@ -115,7 +116,7 @@ public final class Pppos {
             if (nvp == 0) { iterFinal = -2; break; }
 
             // EKF measurement update
-            int info = rtk.filter.update(xp, Pp, H, v, R, rtk.nx, nvp);
+            int info = MatrixUtil.filter(xp, Pp, H, v, R, rtk.nx, nvp, rtk.filterWs);
             if (info != 0) { iterFinal = -3; break; }
 
             // Post-fit residuals
@@ -138,30 +139,64 @@ public final class Pppos {
             double[] xpAr = xp.clone();
             double[] PpAr = Pp.clone();
             if (PpposAr.pppAr(rtk, obs, n, nav, azel, xpAr, PpAr)) {
-                // Post-fix validation: check residuals with fixed state
-                if (pppRes(9, obs, n, rs, dts, varRs, svh, dr, exc, nav, xpAr, rtk,
-                           null, null, null, azel) != 0) {
-                    // Copy fixed state to xa
-                    int na = rtk.na;
-                    System.arraycopy(xpAr, 0, rtk.xa, 0, na);
-                    for (int ii = 0; ii < na; ii++) {
-                        for (int jj = 0; jj < na; jj++) {
-                            rtk.Pa[ii + jj * na] = PpAr[ii + jj * rtk.nx];
-                        }
+                // Position jump check (PpposAr already checks MAX_POS_DIFF_FIX)
+                double dpos = Math.sqrt(sq(xpAr[0] - xp[0]) + sq(xpAr[1] - xp[1]) + sq(xpAr[2] - xp[2]));
+                double norm3d = Math.sqrt(PpAr[0] + PpAr[1 + rtk.nx] + PpAr[2 + 2 * rtk.nx]);
+
+                if (dpos >= 0.5) {
+                    diagArRejPosDiff++;
+                } else if (norm3d >= 0.15) {
+                    diagArRejStd++;
+                } else {
+                    // Post-fix validation: check residuals with fixed state
+                    // Save ssat state before pppRes modifies it
+                    int[][] vsatSave = new int[n][];
+                    double[][] rescSave = new double[n][];
+                    double[][] respSave = new double[n][];
+                    for (int i = 0; i < n && i < MAXOBS; i++) {
+                        int sat = obs[i].sat;
+                        vsatSave[i] = rtk.ssat[sat - 1].vsat.clone();
+                        rescSave[i] = rtk.ssat[sat - 1].resc.clone();
+                        respSave[i] = rtk.ssat[sat - 1].resp.clone();
                     }
 
-                    // Check 3D position std
-                    double norm3d = Math.sqrt(PpAr[0] + PpAr[1 + rtk.nx] + PpAr[2 + 2 * rtk.nx]);
-                    if (norm3d < 0.15) {
-                        // Use fixed position for solution output
-                        System.arraycopy(xpAr, 0, xp, 0, 3);
-                        System.arraycopy(PpAr, 0, Pp, 0, rtk.nx * rtk.nx);
-                        System.arraycopy(xp, 0, rtk.x, 0, rtk.nx);
-                        System.arraycopy(Pp, 0, rtk.P, 0, rtk.nx * rtk.nx);
+                    int[] excAr = exc.clone();
+                    boolean resOk = pppRes(9, obs, n, rs, dts, varRs, svh, dr, excAr, nav, xpAr, rtk,
+                                           null, null, null, azel) != 0;
+
+                    // Always restore ssat state: pppRes(9) with fixed position
+                    // overwrites vsat/resc/resp which must reflect float state
+                    for (int i = 0; i < n && i < MAXOBS; i++) {
+                        int sat = obs[i].sat;
+                        System.arraycopy(vsatSave[i], 0, rtk.ssat[sat - 1].vsat, 0, vsatSave[i].length);
+                        System.arraycopy(rescSave[i], 0, rtk.ssat[sat - 1].resc, 0, rescSave[i].length);
+                        System.arraycopy(respSave[i], 0, rtk.ssat[sat - 1].resp, 0, respSave[i].length);
+                    }
+
+                    if (resOk) {
+                        // Store fixed solution in xa/Pa for output only.
+                        // Do NOT modify rtk.x/P — float state must continue
+                        // independently to avoid locking the filter.
+                        int na = rtk.na;
+                        System.arraycopy(xpAr, 0, rtk.xa, 0, na);
+                        for (int ii = 0; ii < na; ii++) {
+                            for (int jj = 0; jj < na; jj++) {
+                                rtk.Pa[ii + jj * na] = PpAr[ii + jj * rtk.nx];
+                            }
+                        }
                         stat = SOLQ_FIX;
+                        rtk.nfix++;
+
+                        // Fix-and-hold: feed back fixed ambiguities as pseudo-observations
+                        if (opt.modear >= 3) {
+                            holdambPpp(rtk, xpAr);
+                        }
                     }
                 }
             }
+        }
+        if (stat != SOLQ_FIX) {
+            rtk.nfix = 0;
         }
 
         if (stat == SOLQ_PPP || stat == SOLQ_FIX) {
@@ -512,6 +547,11 @@ public final class Pppos {
             }
         }
 
+        // Accumulate MW for ALL dual-freq satellites (independent of vsat/pppRes)
+        if (rtk.opt.modear >= 1 && PpposAr.hasAnyPhaseBias(nav)) {
+            accumulateMw(rtk, obs, n, nav);
+        }
+
         for (int f = 0; f < NF(rtk.opt); f++) {
             // Reset phase-bias if outage counter exceeded
             for (int i = 0; i < MAXSAT; i++) {
@@ -571,6 +611,82 @@ public final class Pppos {
                 if (bias[i] == 0.0 || (rtk.x[j] != 0.0 && slip[i] == 0)) continue;
                 rtk.initx(bias[i], VAR_BIAS, IB(sat, f, rtk.opt));
             }
+        }
+    }
+
+    /**
+     * Fix-and-hold: inject SD pseudo-observations from fixed ambiguities back into EKF.
+     * Modelled after Rtkpos.holdamb() and heiwa0519/PPP_AR holdamb_ppp().
+     */
+    private static void holdambPpp(PppState rtk, double[] xa) {
+        ProcessingOptions opt = rtk.opt;
+        int nx = rtk.nx;
+        int nbMax = nx - rtk.na;
+        double[] v = new double[nbMax];
+        double[] H = new double[nbMax * nx];
+        int nv = 0;
+
+        int[] SYS_LIST = {SYS_GPS, SYS_GAL, SYS_CMP, SYS_QZS};
+        for (int si = 0; si < SYS_LIST.length; si++) {
+            int sys = SYS_LIST[si];
+
+            // Collect satellites with fix[0]==2 in this system
+            int[] index = new int[MAXSAT];
+            int ns = 0;
+            for (int i = 0; i < MAXSAT; i++) {
+                if (SatelliteUtil.satsys(i + 1)[0] != sys) continue;
+                if (rtk.ssat[i].fix[0] != 2) continue;
+                if (rtk.ssat[i].azel[1] < opt.elmaskhold) continue;
+                index[ns++] = IB(i + 1, 0, opt);
+                rtk.ssat[i].fix[0] = 3; // hold
+            }
+
+            // SD pseudo-observations: ref vs each rover
+            for (int i = 1; i < ns; i++) {
+                v[nv] = (xa[index[0]] - xa[index[i]])
+                      - (rtk.x[index[0]] - rtk.x[index[i]]);
+                H[index[0] + nv * nx] = 1.0;
+                H[index[i] + nv * nx] = -1.0;
+                nv++;
+            }
+        }
+
+        if (nv < opt.minholdsats) return;
+
+        double[] Rv = new double[nv * nv];
+        for (int i = 0; i < nv; i++) Rv[i + i * nv] = opt.varholdamb;
+
+        double[] Ht = new double[nx * nv];
+        System.arraycopy(H, 0, Ht, 0, nx * nv);
+
+        MatrixUtil.filter(rtk.x, rtk.P, Ht, v, Rv, nx, nv, rtk.filterWs);
+    }
+
+    /**
+     * Accumulate MW averages for all dual-freq satellites, independent of vsat/EKF state.
+     * This allows MW convergence even when satellites temporarily fail pppRes validation.
+     */
+    private static void accumulateMw(PppState rtk, ObsData[] obs, int n, Navigation nav) {
+        for (int i = 0; i < n && i < MAXOBS; i++) {
+            int sat = obs[i].sat;
+            int sys = SatelliteUtil.satsys(sat)[0];
+            if (sys == SYS_GLO) continue;
+
+            PppState.SatState ss = rtk.ssat[sat - 1];
+            if (ss.azel[1] < rtk.opt.elmin) continue;
+            if (ss.slip[0] != 0) continue;
+
+            int f2 = Spp.seliflc(rtk.opt.nf, sys, obs[i]);
+            if (f2 >= NFREQ) continue;
+            if (obs[i].L[0] == 0.0 || obs[i].L[f2] == 0.0 ||
+                obs[i].P[0] == 0.0 || obs[i].P[f2] == 0.0) continue;
+
+            double freq1 = SignalUtil.sat2freq(sat, obs[i].code[0], nav);
+            double freq2 = SignalUtil.sat2freq(sat, obs[i].code[f2], nav);
+            if (freq1 == 0.0 || freq2 == 0.0) continue;
+
+            PpposAr.updateMwAverage(ss, obs[i], f2, freq1, freq2, nav, rtk.tt);
+            PpposAr.diagMwAccum++;
         }
     }
 
@@ -686,6 +802,7 @@ public final class Pppos {
             if (biasIx > 0) {
                 P[i] += nav.cbias[obs.sat - 1][frq][biasIx - 1];
             }
+
         }
 
         // Iono-free LC
@@ -1059,14 +1176,24 @@ public final class Pppos {
         }
         rtk.sol.stat = rtk.sol.ns < MIN_NSAT_SOL ? SOLQ_NONE : stat;
 
-        // Copy state to solution
-        for (int i = 0; i < 3; i++) {
-            rtk.sol.rr[i] = rtk.x[i];
-            rtk.sol.qr[i] = (float) rtk.P[i + i * rtk.nx];
+        // Copy state to solution: use xa/Pa for FIX, x/P for float
+        if (stat == SOLQ_FIX) {
+            for (int i = 0; i < 3; i++) {
+                rtk.sol.rr[i] = rtk.xa[i];
+                rtk.sol.qr[i] = (float) rtk.Pa[i + i * rtk.na];
+            }
+            rtk.sol.qr[3] = (float) rtk.Pa[1];
+            rtk.sol.qr[4] = (float) rtk.Pa[2 + rtk.na];
+            rtk.sol.qr[5] = (float) rtk.Pa[2];
+        } else {
+            for (int i = 0; i < 3; i++) {
+                rtk.sol.rr[i] = rtk.x[i];
+                rtk.sol.qr[i] = (float) rtk.P[i + i * rtk.nx];
+            }
+            rtk.sol.qr[3] = (float) rtk.P[1];
+            rtk.sol.qr[4] = (float) rtk.P[2 + rtk.nx];
+            rtk.sol.qr[5] = (float) rtk.P[2];
         }
-        rtk.sol.qr[3] = (float) rtk.P[1];
-        rtk.sol.qr[4] = (float) rtk.P[2 + rtk.nx];
-        rtk.sol.qr[5] = (float) rtk.P[2];
 
         rtk.sol.dtr[0] = rtk.x[IC(0, opt)] / CLIGHT;
         rtk.sol.dtr[1] = (rtk.x[IC(1, opt)] - rtk.x[IC(0, opt)]) / CLIGHT;

@@ -238,6 +238,18 @@ public class PostProcessor {
     public static int processRtk(String roverObsFile, String baseObsFile,
                                    String navFile, String outFile,
                                    ProcessingOptions popt, SolutionOptions sopt) {
+        return processRtk(roverObsFile, baseObsFile, navFile, outFile, popt, sopt, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Process RTK with optional epoch limit.
+     *
+     * @param maxEpochs maximum number of rover epochs to process
+     */
+    public static int processRtk(String roverObsFile, String baseObsFile,
+                                   String navFile, String outFile,
+                                   ProcessingOptions popt, SolutionOptions sopt,
+                                   int maxEpochs) {
         // Read navigation data
         Navigation nav = new Navigation();
         try {
@@ -271,6 +283,9 @@ public class PostProcessor {
         if (roverEpochs == null || roverEpochs.isEmpty()) {
             System.err.println("error: no rover observation data");
             return -1;
+        }
+        if (maxEpochs < roverEpochs.size()) {
+            roverEpochs = roverEpochs.subList(0, maxEpochs);
         }
         if (baseEpochs == null || baseEpochs.isEmpty()) {
             System.err.println("error: no base observation data");

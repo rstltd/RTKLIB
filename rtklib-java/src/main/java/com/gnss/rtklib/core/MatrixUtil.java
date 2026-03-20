@@ -98,15 +98,65 @@ public final class MatrixUtil {
         boolean tA = tr.charAt(0) != 'N';
         boolean tB = tr.charAt(1) != 'N';
 
-        for (int j = 0; j < k; j++) {
-            for (int i = 0; i < n; i++) {
-                double d = 0.0;
-                for (int x = 0; x < m; x++) {
-                    double aVal = tA ? A[x + i * m] : A[i + x * n];
-                    double bVal = tB ? B[j + x * k] : B[x + j * m];
-                    d += aVal * bVal;
+        if (!tA && !tB) {
+            matmulNN(n, k, m, alpha, A, B, beta, C);
+        } else if (!tA && tB) {
+            matmulNT(n, k, m, alpha, A, B, beta, C);
+        } else {
+            // TN, TT: j-i-x loop (already cache-friendly for TN)
+            for (int j = 0; j < k; j++) {
+                for (int i = 0; i < n; i++) {
+                    double d = 0.0;
+                    for (int x = 0; x < m; x++) {
+                        double aVal = A[x + i * m]; // tA: contiguous in x
+                        double bVal = tB ? B[j + x * k] : B[x + j * m];
+                        d += aVal * bVal;
+                    }
+                    if (beta == 0.0) C[i + j * n] = alpha * d;
+                    else             C[i + j * n] = alpha * d + beta * C[i + j * n];
                 }
-                C[i + j * n] = alpha * d + beta * C[i + j * n];
+            }
+        }
+    }
+
+    /** Cache-optimized NN kernel: column-axpy C[:,j] += alpha * B[x,j] * A[:,x] */
+    private static void matmulNN(int n, int k, int m,
+                                  double alpha, double[] A, double[] B,
+                                  double beta, double[] C) {
+        for (int j = 0; j < k; j++) {
+            int cOff = j * n;
+            if (beta == 0.0) {
+                for (int i = 0; i < n; i++) C[cOff + i] = 0.0;
+            } else if (beta != 1.0) {
+                for (int i = 0; i < n; i++) C[cOff + i] *= beta;
+            }
+            for (int x = 0; x < m; x++) {
+                double bVal = alpha * B[x + j * m];
+                int aOff = x * n;
+                for (int i = 0; i < n; i++) {
+                    C[cOff + i] += bVal * A[aOff + i];
+                }
+            }
+        }
+    }
+
+    /** Cache-optimized NT kernel: column-axpy with transposed B */
+    private static void matmulNT(int n, int k, int m,
+                                  double alpha, double[] A, double[] B,
+                                  double beta, double[] C) {
+        for (int j = 0; j < k; j++) {
+            int cOff = j * n;
+            if (beta == 0.0) {
+                for (int i = 0; i < n; i++) C[cOff + i] = 0.0;
+            } else if (beta != 1.0) {
+                for (int i = 0; i < n; i++) C[cOff + i] *= beta;
+            }
+            for (int x = 0; x < m; x++) {
+                double bVal = alpha * B[j + x * k];
+                int aOff = x * n;
+                for (int i = 0; i < n; i++) {
+                    C[cOff + i] += bVal * A[aOff + i];
+                }
             }
         }
     }
@@ -475,6 +525,95 @@ public final class MatrixUtil {
 
         System.arraycopy(R, 0, Q, 0, m * m);
         System.arraycopy(x, 0, xp, 0, n);
+
+        matmul("NN", n, m, n, P, H, F);          // F = P*H
+        matmulp("TN", m, m, n, H, F, Q);          // Q = H'*P*H + R
+
+        int info = matinv(Q, m);
+        if (info != 0) return info;
+
+        matmul("NN", n, m, m, F, Q, K);           // K = P*H*Q^-1
+        matmulp("NN", n, 1, m, K, v, xp);          // xp = x + K*v
+        matmulm("NT", n, n, m, K, H, I);           // I = I - K*H'
+        matmul("NN", n, n, n, I, P, Pp);            // Pp = (I-K*H')*P
+
+        return 0;
+    }
+
+    // ---------------------------------------------------------------
+    // Workspace-aware filter (pre-allocated arrays)
+    // ---------------------------------------------------------------
+
+    /** Pre-allocated workspace for filter update to eliminate per-epoch GC. */
+    public static class FilterWorkspace {
+        double[] F, Q, K, I_;
+        double[] x_, xp_, P_, Pp_, H_;
+        int[] ix;
+        int capN, capM;
+
+        public void ensureCapacity(int n, int m) {
+            if (n <= capN && m <= capM) return;
+            capN = Math.max(n, capN);
+            capM = Math.max(m, capM);
+            F = new double[capN * capM];
+            Q = new double[capM * capM];
+            K = new double[capN * capM];
+            I_ = new double[capN * capN];
+            x_ = new double[capN];
+            xp_ = new double[capN];
+            P_ = new double[capN * capN];
+            Pp_ = new double[capN * capN];
+            H_ = new double[capN * capM];
+            ix = new int[capN];
+        }
+    }
+
+    /**
+     * EKF measurement update with pre-allocated workspace.
+     * Functionally identical to {@link #filter(double[], double[], double[], double[], double[], int, int)}
+     * but avoids per-call array allocation.
+     */
+    public static int filter(double[] x, double[] P, double[] H, double[] v,
+                              double[] R, int n, int m, FilterWorkspace ws) {
+        ws.ensureCapacity(n, m);
+
+        // Build index of non-zero states
+        int k = 0;
+        for (int i = 0; i < n; i++) {
+            if (x[i] != 0.0 && P[i + i * n] > 0.0) ws.ix[k++] = i;
+        }
+
+        // Compress arrays into workspace
+        for (int i = 0; i < k; i++) {
+            ws.x_[i] = x[ws.ix[i]];
+            for (int j = 0; j < k; j++) ws.P_[i + j * k] = P[ws.ix[i] + ws.ix[j] * n];
+            for (int j = 0; j < m; j++) ws.H_[i + j * k] = H[ws.ix[i] + j * n];
+        }
+
+        // Run filter on compressed arrays using workspace
+        int info = filter_(ws.x_, ws.P_, ws.H_, v, R, k, m,
+                           ws.xp_, ws.Pp_, ws.F, ws.Q, ws.K, ws.I_);
+
+        // Copy back
+        for (int i = 0; i < k; i++) {
+            x[ws.ix[i]] = ws.xp_[i];
+            for (int j = 0; j < k; j++) P[ws.ix[i] + ws.ix[j] * n] = ws.Pp_[i + j * k];
+        }
+        return info;
+    }
+
+    /** Core EKF update using pre-allocated work arrays. */
+    private static int filter_(double[] x, double[] P, double[] H, double[] v,
+                                double[] R, int n, int m,
+                                double[] xp, double[] Pp,
+                                double[] F, double[] Q, double[] K, double[] I) {
+        java.util.Arrays.fill(F, 0, n * m, 0.0);
+        System.arraycopy(R, 0, Q, 0, m * m);
+        System.arraycopy(x, 0, xp, 0, n);
+
+        // I = identity(n)
+        java.util.Arrays.fill(I, 0, n * n, 0.0);
+        for (int i = 0; i < n; i++) I[i + i * n] = 1.0;
 
         matmul("NN", n, m, n, P, H, F);          // F = P*H
         matmulp("TN", m, m, n, H, F, Q);          // Q = H'*P*H + R

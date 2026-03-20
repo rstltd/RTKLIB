@@ -30,6 +30,9 @@ public class RtkState extends FilterState {
     /** Hold ambiguity flag (1: hold has occurred) */
     public int holdamb;
 
+    /** Workspace: Hi row vector for ddres (pre-allocated to avoid per-DD GC) */
+    public double[] wsHi;
+
     /** Satellite states */
     public SatState[] ssat = new SatState[MAXSAT];
 
@@ -58,6 +61,7 @@ public class RtkState extends FilterState {
         P = new double[nx * nx];
         xa = new double[na];
         Pa = new double[na * na];
+        wsHi = new double[nx];
 
         sol = new Solution();
         sol.thres = (float) opt.thresar[0];

@@ -303,6 +303,7 @@ class PppArL1L5Test {
 
         // --- AR ---
         PpposAr.diagAttempt = PpposAr.diagWlOk = PpposAr.diagNlOk = PpposAr.diagFixed = 0;
+        PpposAr.diagWlPeak = PpposAr.diagNlPeak = PpposAr.diagEligPeak = PpposAr.diagMwAccum = 0;
 
         ProcessingOptions poptAr = new ProcessingOptions();
         SolutionOptions soptAr = new SolutionOptions();
@@ -328,25 +329,61 @@ class PppArL1L5Test {
         Files.copy(outAr, savedPos, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         Files.deleteIfExists(outAr);
 
+        // Save AR diagnostics before reset
+        int diagEligPeakAr = PpposAr.diagEligPeak;
+        int diagWlPeakAr = PpposAr.diagWlPeak;
+        int diagNlPeakAr = PpposAr.diagNlPeak;
+        int diagFixedAr = PpposAr.diagFixed;
+        int diagMwAccumAr = PpposAr.diagMwAccum;
+        // --- Run Fix-and-Hold ---
+        PpposAr.diagAttempt = PpposAr.diagWlOk = PpposAr.diagNlOk = PpposAr.diagFixed = 0;
+        PpposAr.diagWlPeak = PpposAr.diagNlPeak = PpposAr.diagEligPeak = PpposAr.diagMwAccum = 0;
+
+        ProcessingOptions poptFH = new ProcessingOptions();
+        SolutionOptions soptFH = new SolutionOptions();
+        ConfigReader.load(PPP_DATA.resolve("ppp.conf").toString(), poptFH, soptFH);
+        poptFH.modear = 3; // fix-and-hold
+        soptFH.posf = 1;
+        soptFH.outhead = 1;
+
+        Path outFH = Files.createTempFile("ppp_l1l2_fh_", ".pos");
+        PostProcessor.processPpp(
+                PPP_DATA.resolve("test-rinex-L1L2.obs").toString(),
+                PPP_DATA.resolve("test-rinex-L1L2.nav").toString(),
+                PPP_DATA.resolve(WHU_SP3).toString(),
+                PPP_DATA.resolve(WHU_CLK).toString(),
+                null,
+                PPP_DATA.resolve(WHU_BIA).toString(),
+                outFH.toString(), poptFH, soptFH);
+        List<double[]> fhSols = loadPos(outFH);
+        double[] fhStats = computeStats(fhSols, ref);
+        int fhMwAccum = PpposAr.diagMwAccum;
+        int fhEligPeak = PpposAr.diagEligPeak;
+        int fhWlPeak = PpposAr.diagWlPeak;
+        int fhNlPeak = PpposAr.diagNlPeak;
+        int fhFixed = PpposAr.diagFixed;
+        Files.deleteIfExists(outFH);
+
         // --- Report ---
-        System.out.printf("%n========== PPP L1+L2 Float vs AR (WHU) ==========%n");
-        System.out.printf("%-25s %12s %12s%n", "", "Float", "AR");
-        System.out.printf("%-25s %12d %12d%n", "Total epochs", floatSols.size(), arSols.size());
-        System.out.printf("%-25s %12.4f %12.4f%n", "3D RMS all (m)", floatStats[0], arStats[0]);
-        System.out.printf("%-25s %12.4f %12.4f%n", "3D RMS 2nd half (m)", floatStats[1], arStats[1]);
-        System.out.printf("%-25s %11.1f%% %11.1f%%%n", "Fix rate (Q=1)", floatStats[2] * 100, arStats[2] * 100);
-        System.out.printf("%-25s %12d %12d%n", "Q=1 (FIX) epochs", (int) floatStats[3], (int) arStats[3]);
-        System.out.printf("%-25s %12d %12d%n", "Q=6 (PPP) epochs", (int) floatStats[4], (int) arStats[4]);
-        System.out.printf("==================================================%n");
-        System.out.printf("AR: attempts=%d, WL ok(last)=%d, NL ok(last)=%d, Fixed=%d%n",
-                PpposAr.diagAttempt, PpposAr.diagWlOk, PpposAr.diagNlOk, PpposAr.diagFixed);
-        System.out.printf("    WL peak=%d, NL peak=%d%n",
-                PpposAr.diagWlPeak, PpposAr.diagNlPeak);
+        System.out.printf("%n========== PPP L1+L2 Float vs AR vs Fix-and-Hold (WHU) ==========%n");
+        System.out.printf("%-25s %12s %12s %12s%n", "", "Float", "AR", "Fix&Hold");
+        System.out.printf("%-25s %12d %12d %12d%n", "Total epochs", floatSols.size(), arSols.size(), fhSols.size());
+        System.out.printf("%-25s %12.4f %12.4f %12.4f%n", "3D RMS all (m)", floatStats[0], arStats[0], fhStats[0]);
+        System.out.printf("%-25s %12.4f %12.4f %12.4f%n", "3D RMS 2nd half (m)", floatStats[1], arStats[1], fhStats[1]);
+        System.out.printf("%-25s %11.1f%% %11.1f%% %11.1f%%%n", "Fix rate (Q=1)", floatStats[2] * 100, arStats[2] * 100, fhStats[2] * 100);
+        System.out.printf("%-25s %12d %12d %12d%n", "Q=1 (FIX) epochs", (int) floatStats[3], (int) arStats[3], (int) fhStats[3]);
+        System.out.printf("%-25s %12d %12d %12d%n", "Q=6 (PPP) epochs", (int) floatStats[4], (int) arStats[4], (int) fhStats[4]);
+        System.out.printf("==================================================================%n");
+        System.out.printf("AR:  Elig peak=%d, WL peak=%d, NL peak=%d, Fixed=%d, MW accum=%d%n",
+                diagEligPeakAr, diagWlPeakAr, diagNlPeakAr, diagFixedAr, diagMwAccumAr);
+        System.out.printf("F&H: Elig peak=%d, WL peak=%d, NL peak=%d, Fixed=%d, MW accum=%d%n",
+                fhEligPeak, fhWlPeak, fhNlPeak, fhFixed, fhMwAccum);
         System.out.printf("Output saved: %s%n", savedPos);
 
         // Assertions
         assertTrue(floatSols.size() > 100, "Float should produce solutions");
         assertTrue(arSols.size() > 100, "AR should produce solutions");
+        assertTrue(fhSols.size() > 100, "Fix-and-hold should produce solutions");
     }
 
     // ---------------------------------------------------------------

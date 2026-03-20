@@ -276,11 +276,17 @@ public final class Spp {
      */
     public static int seliflc(int optnf, int sys, ObsData obs) {
         int f2 = seliflc(optnf, sys);
-        // Fallback: if L2 has no phase/code but L5 does, use L5
-        if (f2 == 1 && optnf >= 3 && obs != null) {
-            boolean l2empty = (obs.L[1] == 0.0 && obs.P[1] == 0.0);
-            boolean l5avail = (obs.L[2] != 0.0 || obs.P[2] != 0.0);
-            if (l2empty && l5avail) return 2;
+        if (optnf >= 3 && obs != null) {
+            // Fallback: if preferred f2 has no phase/code, try the other
+            if (f2 == 1) {
+                boolean l2empty = (obs.L[1] == 0.0 && obs.P[1] == 0.0);
+                boolean l5avail = (obs.L[2] != 0.0 || obs.P[2] != 0.0);
+                if (l2empty && l5avail) return 2;
+            } else if (f2 == 2) {
+                boolean l5empty = (obs.L[2] == 0.0 && obs.P[2] == 0.0);
+                boolean l2avail = (obs.L[1] != 0.0 || obs.P[1] != 0.0);
+                if (l5empty && l2avail) return 1;
+            }
         }
         return f2;
     }

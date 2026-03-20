@@ -28,11 +28,14 @@ public final class PpposAr {
     private PpposAr() {}
 
     private static final double WL_FRAC_THRES = 0.25;
-    private static final int MIN_SD_AMB = 4;
+    private static final int MIN_SD_AMB = 3;
+    /** Max position correction from AR fix (m) — reject if exceeded */
+    private static final double MAX_POS_DIFF_FIX = 0.5;
 
     // Diagnostic counters
     public static int diagAttempt, diagWlOk, diagNlOk, diagFixed;
-    public static int diagWlPeak, diagNlPeak;
+    public static int diagWlPeak, diagNlPeak, diagEligPeak;
+    public static int diagMwAccum; // total MW accumulations from Pppos
 
     /**
      * Check if navigation data has any satellite phase biases loaded.
@@ -67,8 +70,6 @@ public final class PpposAr {
 
             PppState.SatState ss = rtk.ssat[sat - 1];
             if (ss.azel[1] < opt.elmaskar) continue;
-            if (ss.vsat[0] == 0) continue;
-
             int f2 = Spp.seliflc(opt.nf, sys, obs[i]);
             if (f2 >= NFREQ || obs[i].L[0] == 0.0 || obs[i].L[f2] == 0.0 ||
                 obs[i].P[0] == 0.0 || obs[i].P[f2] == 0.0) continue;
@@ -94,20 +95,12 @@ public final class PpposAr {
             eligObs[ne] = i;
             ne++;
         }
+        if (ne > diagEligPeak) diagEligPeak = ne;
         if (ne < MIN_SD_AMB + 1) return false; // need ref + MIN_SD_AMB rovers
 
-        // --- Step 2: Update MW averages for all eligible sats ---
-        for (int i = 0; i < ne; i++) {
-            int sat = eligSat[i];
-            int f2 = eligF2[i];
-            int oi = eligObs[i];
-            double freq1 = SignalUtil.sat2freq(sat, obs[oi].code[0], nav);
-            double freq2 = SignalUtil.sat2freq(sat, obs[oi].code[f2], nav);
-            if (freq1 == 0 || freq2 == 0) continue;
-            updateMwAverage(rtk.ssat[sat - 1], obs[oi], f2, freq1, freq2, nav, rtk.tt);
-        }
+        // MW averages are now accumulated independently in Pppos.udbiasPpp()
 
-        // --- Step 3: Generate SD pairs per system (ref = highest elevation) ---
+        // --- Step 2: Generate SD pairs per system (ref = highest elevation) ---
         int[] sdSat = new int[ne];     // rover satellite
         int[] sdRef = new int[ne];     // reference satellite
         int[] sdF2 = new int[ne];      // f2 index
@@ -152,7 +145,7 @@ public final class PpposAr {
 
         double interval = Math.abs(rtk.tt);
         if (interval <= 0.0) interval = 30.0;
-        int minCount = Math.max(10, (int) Math.min(300.0 / interval, 300));
+        int minCount = Math.max(5, (int) Math.min(120.0 / interval, 120));
 
         for (int i = 0; i < nsd; i++) {
             sdWl[i] = Integer.MIN_VALUE;
@@ -191,7 +184,7 @@ public final class PpposAr {
 
         for (int i = 0; i < nb; i++) {
             int sat = fSat[i], ref = fRef[i], wl = fWl[i];
-            int oi = fOiR[i];
+            int oi = fOiR[i], oiRef = fOiB[i];
             double freq1 = SignalUtil.sat2freq(sat, obs[oi].code[0], nav);
             double freq2 = SignalUtil.sat2freq(sat, obs[oi].code[fF2[i]], nav);
             if (freq1 == 0 || freq2 == 0) { nlFloat[i] = 0; continue; }
@@ -276,6 +269,9 @@ public final class PpposAr {
             }
         }
 
+        // Save original position for outlier check after conditional update
+        double[] xpOrig = new double[]{xp[0], xp[1], xp[2]};
+
         // Reconstruct fixed SD IFLC biases
         double[] db = new double[nb];
         for (int i = 0; i < nb; i++) {
@@ -304,6 +300,14 @@ public final class PpposAr {
             xp[i] -= corr;
         }
 
+        // Reject if position correction is too large (outlier protection)
+        double posDiff = 0;
+        for (int i = 0; i < 3; i++) {
+            double d = xp[i] - xpOrig[i];
+            posDiff += d * d;
+        }
+        if (Math.sqrt(posDiff) > MAX_POS_DIFF_FIX) return false;
+
         // Pp[0..na-1, 0..na-1] -= Qab * QbIF^-1 * Qab'
         double[] QQ = new double[na * nb];
         MatrixUtil.matmul("NN", na, nb, nb, Qab, QbIF, QQ);
@@ -315,6 +319,12 @@ public final class PpposAr {
             }
         }
 
+        // Mark fixed satellites (for fix-and-hold feedback)
+        for (int i = 0; i < nb; i++) {
+            rtk.ssat[fSat[i] - 1].fix[0] = 2;
+            rtk.ssat[fRef[i] - 1].fix[0] = 2;
+        }
+
         diagFixed++;
         return true;
     }
@@ -324,7 +334,7 @@ public final class PpposAr {
      * Applies phase + code OSB correction. Result stored per-satellite (undifferenced).
      * SD is formed later by subtracting reference satellite's average.
      */
-    private static void updateMwAverage(PppState.SatState ssat, ObsData obs, int f2,
+    static void updateMwAverage(PppState.SatState ssat, ObsData obs, int f2,
                                          double freq1, double freq2,
                                          Navigation nav, double tt) {
         double lamWL = CLIGHT / (freq1 - freq2);
@@ -354,7 +364,7 @@ public final class PpposAr {
         return -1;
     }
 
-    static double lookupPhaseBias(Navigation nav, int sat, int code) {
+    public static double lookupPhaseBias(Navigation nav, int sat, int code) {
         if (code <= 0 || code > MAXCODE) return 0.0;
         double b = nav.pbias[sat - 1][code];
         if (b != 0.0) return b;
@@ -363,7 +373,7 @@ public final class PpposAr {
         return b;
     }
 
-    static double lookupCodeBias(Navigation nav, int sat, int code) {
+    public static double lookupCodeBias(Navigation nav, int sat, int code) {
         if (code <= 0 || code > MAXCODE) return 0.0;
         double b = nav.cbias_osb[sat - 1][code];
         if (b != 0.0) return b;
@@ -389,6 +399,18 @@ public final class PpposAr {
             // E5b (L7) fallbacks
             case CODE_L7X: return CODE_L7Q;
             case CODE_L7Q: return CODE_L7X;
+            case CODE_L7I: return CODE_L7Q;
+            // GPS L2 additional fallbacks
+            case CODE_L2P: return CODE_L2W;
+            case CODE_L2C: return CODE_L2S;
+            // GPS L1 additional fallback
+            case CODE_L1W: return CODE_L1C;
+            // GAL E5ab (L8) fallbacks
+            case CODE_L8X: return CODE_L8Q;
+            case CODE_L8Q: return CODE_L8X;
+            // GAL E6 (L6) fallbacks
+            case CODE_L6X: return CODE_L6C;
+            case CODE_L6C: return CODE_L6X;
             default: return 0;
         }
     }

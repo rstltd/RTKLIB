@@ -148,6 +148,7 @@ public class ConfigReader {
         opts.add(doubleOpt("pos2-arthres2",    "", v -> popt.thresar[2] = v));
         opts.add(doubleOpt("pos2-arthres3",    "", v -> popt.thresar[3] = v));
         opts.add(doubleOpt("pos2-arthres4",    "", v -> popt.thresar[4] = v));
+        opts.add(doubleOpt("pos2-arpostfixthres", "m", v -> popt.thresar[7] = v));
         opts.add(doubleOpt("pos2-varholdamb",  "cyc^2", v -> popt.varholdamb = v));
         opts.add(doubleOpt("pos2-gainholdamb", "", v -> popt.gainholdamb = v));
         opts.add(intOpt("pos2-arlockcnt",   "", v -> popt.minlock = v));

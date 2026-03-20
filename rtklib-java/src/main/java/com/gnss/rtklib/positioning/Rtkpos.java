@@ -434,10 +434,9 @@ public final class Rtkpos {
                 if (rtk.opt.modear == ARMODE_INST && rtk.x[j] != 0.0) {
                     rtk.initx(0.0, 0.0, j);
                 } else if (reset && rtk.x[j] != 0.0) {
-                    // Inflate variance instead of full reset to avoid reset loop.
-                    // Keep the state estimate so the satellite stays in the filter;
-                    // the EKF will naturally re-converge with the inflated uncertainty.
-                    rtk.P[j + j * rtk.nx] = SQR(rtk.opt.std[0]);
+                    // Full reset to match C RTKLIB: clear state and covariance
+                    // so the satellite re-initializes cleanly on next appearance.
+                    rtk.initx(0.0, 0.0, j);
                     rtk.ssat[i - 1].outc[k] = 0;
                 }
                 if (rtk.opt.modear == ARMODE_INST && reset) {
@@ -700,15 +699,22 @@ public final class Rtkpos {
 
         double[] pos = Coord.ecef2pos(rr_);
 
+        // pre-compute zenith hydrostatic delay (same for all satellites in epoch)
+        double[] zazel = {0.0, PI / 2.0};
+        double zhd = Troposphere.tropmodel(obs[0].time, pos, zazel, 0.0);
+
+        // pre-allocate per-satellite work arrays
+        double[] ei = new double[3];
+        double[] azelI = new double[2];
+        double[] mapfw = new double[1];
+
         for (int i = 0; i < n; i++) {
-            double[] ei = new double[3];
             double r = Geometry.geodist(new double[]{rs[i * 6], rs[i * 6 + 1], rs[i * 6 + 2]},
                                          rr_, ei);
             if (r <= 0.0) continue;
 
             e[i * 3] = ei[0]; e[i * 3 + 1] = ei[1]; e[i * 3 + 2] = ei[2];
 
-            double[] azelI = new double[2];
             if (Geometry.satazel(pos, ei, azelI) < opt.elmin) continue;
             azel[i * 2] = azelI[0]; azel[i * 2 + 1] = azelI[1];
 
@@ -718,9 +724,6 @@ public final class Rtkpos {
             r += -CLIGHT * dts[i * 2];
 
             // troposphere correction (Saastamoinen hydrostatic)
-            double[] zazel = {0.0, PI / 2.0};
-            double zhd = Troposphere.tropmodel(obs[0].time, pos, zazel, 0.0);
-            double[] mapfw = new double[1];
             double mapfh = Troposphere.tropmapf(obs[i].time, pos, azelI, mapfw);
             r += mapfh * zhd;
 
@@ -759,19 +762,20 @@ public final class Rtkpos {
             }
         }
 
-        // troposphere estimation factors (if enabled)
+        // troposphere estimation factors and mapping functions (if enabled)
         double[] tropu = new double[ns], tropr = new double[ns];
+        double[] mfU = new double[ns], mfR = new double[ns]; // cached mapping functions
         if (opt.tropopt >= TROPOPT_EST) {
             double[] posu = Coord.ecef2pos(x);
             double[] posr = Coord.ecef2pos(rtk.rb);
+            double[] mapfw = new double[1];
             for (int i = 0; i < ns; i++) {
-                double[] mapfw = new double[1];
                 double[] azelU = {azel[iu[i] * 2], azel[iu[i] * 2 + 1]};
                 double[] azelR = {azel[ir[i] * 2], azel[ir[i] * 2 + 1]};
-                double mwu = Troposphere.tropmapf(rtk.sol.time, posu, azelU, mapfw);
-                tropu[i] = mwu * x[RtkState.IT(0, opt)];
-                double mwr = Troposphere.tropmapf(rtk.sol.time, posr, azelR, mapfw);
-                tropr[i] = mwr * x[RtkState.IT(1, opt)];
+                mfU[i] = Troposphere.tropmapf(rtk.sol.time, posu, azelU, mapfw);
+                tropu[i] = mfU[i] * x[RtkState.IT(0, opt)];
+                mfR[i] = Troposphere.tropmapf(rtk.sol.time, posr, azelR, mapfw);
+                tropr[i] = mfR[i] * x[RtkState.IT(1, opt)];
             }
         }
 
@@ -806,7 +810,8 @@ public final class Rtkpos {
 
                     double[] Hi = null;
                     if (H != null) {
-                        Hi = new double[rtk.nx];
+                        Hi = rtk.wsHi;
+                        java.util.Arrays.fill(Hi, 0, rtk.nx, 0.0);
                     }
 
                     // DD measurement
@@ -832,24 +837,12 @@ public final class Rtkpos {
                         }
                     }
 
-                    // troposphere estimation
+                    // troposphere estimation (uses pre-computed mapping functions)
                     if (opt.tropopt >= TROPOPT_EST) {
                         v[nv] -= (tropu[refIdx] - tropu[j]) - (tropr[refIdx] - tropr[j]);
                         if (Hi != null) {
-                            double[] mapfwU = new double[1];
-                            double[] azelRefU = {azel[iu[refIdx] * 2], azel[iu[refIdx] * 2 + 1]};
-                            double[] azelJU = {azel[iu[j] * 2], azel[iu[j] * 2 + 1]};
-                            double[] posu = Coord.ecef2pos(x);
-                            double mref = Troposphere.tropmapf(rtk.sol.time, posu, azelRefU, mapfwU);
-                            double mj = Troposphere.tropmapf(rtk.sol.time, posu, azelJU, mapfwU);
-                            Hi[RtkState.IT(0, opt)] = mref - mj;
-
-                            double[] posr = Coord.ecef2pos(rtk.rb);
-                            double[] azelRefR = {azel[ir[refIdx] * 2], azel[ir[refIdx] * 2 + 1]};
-                            double[] azelJR = {azel[ir[j] * 2], azel[ir[j] * 2 + 1]};
-                            double mrefR = Troposphere.tropmapf(rtk.sol.time, posr, azelRefR, mapfwU);
-                            double mjR = Troposphere.tropmapf(rtk.sol.time, posr, azelJR, mapfwU);
-                            Hi[RtkState.IT(1, opt)] = -(mrefR - mjR);
+                            Hi[RtkState.IT(0, opt)] = mfU[refIdx] - mfU[j];
+                            Hi[RtkState.IT(1, opt)] = -(mfR[refIdx] - mfR[j]);
                         }
                     }
 
@@ -927,9 +920,7 @@ public final class Rtkpos {
 
                     // copy Hi row into H matrix
                     if (H != null && Hi != null) {
-                        for (int k = 0; k < rtk.nx; k++) {
-                            H[k + nv * rtk.nx] = Hi[k];
-                        }
+                        System.arraycopy(Hi, 0, H, nv * rtk.nx, rtk.nx);
                     }
 
                     vflg[nv] = (sat[refIdx] << 16) | (sat[j] << 8) | ((code != 0 ? 1 : 0) << 4) | frq;
@@ -1072,7 +1063,7 @@ public final class Rtkpos {
         double[] Ht = new double[rtk.nx * nv];
         System.arraycopy(H, 0, Ht, 0, rtk.nx * nv);
 
-        rtk.filter.update(rtk.x, rtk.P, Ht, v, Rv, rtk.nx, nv);
+        MatrixUtil.filter(rtk.x, rtk.P, Ht, v, Rv, rtk.nx, nv, rtk.filterWs);
 
         // GLONASS ICB update (fix-and-hold)
         if (rtk.opt.glomodear != GLO_ARMODE_FIXHOLD) return;
@@ -1114,73 +1105,41 @@ public final class Rtkpos {
     }
 
     // ---------------------------------------------------------------
-    // findWorstAmbSat: find satellite with largest ambiguity variance
+    // findNextDropSat: round-robin satellite dropout (matches C RTKLIB)
     // ---------------------------------------------------------------
 
     /**
-     * Find the AR-eligible satellite with the largest ambiguity variance
-     * across all frequencies. Reference satellites are excluded from
-     * consideration since removing them would invalidate all DDs in
-     * their constellation.
+     * Find the next AR-eligible satellite to exclude using round-robin.
+     * Starts scanning from the position after the last excluded satellite
+     * ({@code rtk.excsat}), wrapping to the beginning if needed.
+     * Matches C RTKLIB's manage_amb_LAMBDA dropout logic.
      *
      * @return satellite number to exclude, or 0 if none found
      */
-    private static int findWorstAmbSat(RtkState rtk, int[] sat, int ns, int nf) {
-        int na = rtk.na;
-        double worstVar = -1;
-        int worstSat = 0;
-
-        // Identify reference satellites (first fix=2 per system+freq in ddidx)
-        // by checking: a ref sat appears in ix[nb*2] (even indices) but not in
-        // ix[nb*2+1] (odd indices). Simpler: a ref sat has fix[f]==2 and is the
-        // first in its system — but we can just check if excluding it would
-        // remove all DDs for that system. Instead, use the heuristic that the
-        // ref sat is the one with highest elevation per system, so it should
-        // never be the worst. We skip sats where fix==2 on ALL freqs AND the
-        // sat is the first in its system group to have fix==2 (= ref sat).
-        // Pragmatic approach: collect ref sats by scanning ssat.
-        boolean[] isRef = new boolean[MAXSAT];
-        for (int m = 0; m < 6; m++) {
-            for (int f = 0; f < nf; f++) {
-                for (int i = 0; i < ns; i++) {
-                    if (!testSys(rtk.ssat[sat[i] - 1].sys, m)) continue;
-                    if (rtk.ssat[sat[i] - 1].fix[f] == 2) {
-                        isRef[sat[i] - 1] = true;
-                        break; // first fix=2 in this sys+freq = reference
-                    }
-                }
-            }
-        }
-
-        for (int i = 0; i < ns; i++) {
-            int s = sat[i] - 1;
-            if (isRef[s]) continue; // don't exclude reference satellites
-
-            // Check eligibility: must be AR-eligible on at least one freq
-            boolean eligible = false;
-            for (int f = 0; f < nf; f++) {
-                if (rtk.ssat[s].vsat[f] != 0 && rtk.ssat[s].lock[f] >= 0 &&
-                    rtk.ssat[s].azel[1] >= rtk.opt.elmin) {
-                    eligible = true;
+    private static int findNextDropSat(RtkState rtk, int[] sat, int ns, int nf) {
+        // Find position of last excluded sat
+        int start = 0;
+        if (rtk.excsat != 0) {
+            for (int i = 0; i < ns; i++) {
+                if (rtk.excsat == sat[i]) {
+                    start = i + 1;
                     break;
                 }
             }
-            if (!eligible) continue;
-
-            // Max ambiguity variance across frequencies
-            double maxVar = 0;
+            // If not found, restart from beginning
+            if (start >= ns) start = 0;
+        }
+        // Find next AR-eligible sat from start position
+        for (int i = start; i < ns; i++) {
             for (int f = 0; f < nf; f++) {
-                int j = RtkState.IB(sat[i], f, rtk.opt);
-                if (j < rtk.nx && rtk.x[j] != 0.0) {
-                    maxVar = Math.max(maxVar, rtk.P[j + j * rtk.nx]);
+                if (rtk.ssat[sat[i] - 1].vsat[f] != 0 &&
+                    rtk.ssat[sat[i] - 1].lock[f] >= 0 &&
+                    rtk.ssat[sat[i] - 1].azel[1] >= rtk.opt.elmin) {
+                    return sat[i];
                 }
             }
-            if (maxVar > worstVar) {
-                worstVar = maxVar;
-                worstSat = sat[i];
-            }
         }
-        return worstSat;
+        return 0;
     }
 
     // ---------------------------------------------------------------
@@ -1293,11 +1252,11 @@ public final class Rtkpos {
             return 0;
         }
 
-        // satellite dropout: exclude the satellite with largest ambiguity variance
+        // satellite dropout: round-robin exclude next AR-eligible satellite
         int excsat = 0;
         int[] lockc = new int[NFREQ];
         if (rtk.sol.prevRatio2 < rtk.sol.thres && rtk.nb_ar >= rtk.opt.mindropsats) {
-            excsat = findWorstAmbSat(rtk, sat, ns, nf);
+            excsat = findNextDropSat(rtk, sat, ns, nf);
             if (excsat != 0) {
                 for (int f = 0; f < nf; f++) {
                     lockc[f] = rtk.ssat[excsat - 1].lock[f];
@@ -1481,17 +1440,16 @@ public final class Rtkpos {
         double[] bias = new double[rtk.nx];
         int[] vflg = new int[ny];
 
+        // pre-allocate rover zdres arrays (shared across iterations + post-fit + fix verify)
+        double[] yRov = new double[nf * 2 * nu];
+        double[] eRov = new double[3 * nu];
+        double[] azelRov = new double[2 * nu];
+        double[] freqRov = new double[nf * nu];
+
         // iterative filter
         for (int i = 0; i < opt.niter; i++) {
             // rover zero-diff residuals
-            ObsData[] obsRov = new ObsData[nu];
-            System.arraycopy(obs, 0, obsRov, 0, nu);
-            double[] yRov = new double[nf * 2 * nu];
-            double[] eRov = new double[3 * nu];
-            double[] azelRov = new double[2 * nu];
-            double[] freqRov = new double[nf * nu];
-
-            if (zdres(0, obsRov, nu, rs, dts, var, svh, nav, xp, opt,
+            if (zdres(0, obs, nu, rs, dts, var, svh, nav, xp, opt,
                       yRov, eRov, azelRov, freqRov) == 0) {
                 stat = SOLQ_NONE;
                 break;
@@ -1510,7 +1468,7 @@ public final class Rtkpos {
             }
 
             // EKF measurement update
-            if (rtk.filter.update(xp, Pp, H, v, Rm, rtk.nx, nv) != 0) {
+            if (MatrixUtil.filter(xp, Pp, H, v, Rm, rtk.nx, nv, rtk.filterWs) != 0) {
                 stat = SOLQ_NONE;
                 break;
             }
@@ -1518,14 +1476,7 @@ public final class Rtkpos {
 
         // post-fit residuals for float solution
         if (stat != SOLQ_NONE) {
-            ObsData[] obsRov = new ObsData[nu];
-            System.arraycopy(obs, 0, obsRov, 0, nu);
-            double[] yRov = new double[nf * 2 * nu];
-            double[] eRov = new double[3 * nu];
-            double[] azelRov = new double[2 * nu];
-            double[] freqRov = new double[nf * nu];
-
-            if (zdres(0, obsRov, nu, rs, dts, var, svh, nav, xp, opt,
+            if (zdres(0, obs, nu, rs, dts, var, svh, nav, xp, opt,
                       yRov, eRov, azelRov, freqRov) != 0) {
                 System.arraycopy(yRov, 0, y, 0, nf * 2 * nu);
                 System.arraycopy(eRov, 0, e, 0, 3 * nu);
@@ -1557,14 +1508,7 @@ public final class Rtkpos {
         if (stat == SOLQ_FLOAT) {
             if (manageAmbLAMBDA(rtk, bias, xa, satArr, nf, ns) > 1) {
                 // verify fixed solution
-                ObsData[] obsRov = new ObsData[nu];
-                System.arraycopy(obs, 0, obsRov, 0, nu);
-                double[] yRov = new double[nf * 2 * nu];
-                double[] eRov = new double[3 * nu];
-                double[] azelRov = new double[2 * nu];
-                double[] freqRov = new double[nf * nu];
-
-                if (zdres(0, obsRov, nu, rs, dts, var, svh, nav, xa, opt,
+                if (zdres(0, obs, nu, rs, dts, var, svh, nav, xa, opt,
                           yRov, eRov, azelRov, freqRov) != 0) {
                     System.arraycopy(yRov, 0, y, 0, nf * 2 * nu);
                     System.arraycopy(eRov, 0, e, 0, 3 * nu);

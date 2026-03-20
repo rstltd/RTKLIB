@@ -2,6 +2,7 @@ package com.gnss.rtklib.model;
 
 import com.gnss.rtklib.core.EkfFilter;
 import com.gnss.rtklib.core.KalmanFilter;
+import com.gnss.rtklib.core.MatrixUtil;
 
 import static com.gnss.rtklib.core.Constants.*;
 
@@ -48,6 +49,9 @@ public abstract class FilterState {
 
     /** Kalman filter implementation */
     public KalmanFilter filter = EkfFilter.INSTANCE;
+
+    /** Pre-allocated workspace for filter update (eliminates per-epoch GC) */
+    public final MatrixUtil.FilterWorkspace filterWs = new MatrixUtil.FilterWorkspace();
 
     /**
      * Initialize state and covariance for state i.

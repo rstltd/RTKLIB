@@ -116,8 +116,8 @@ public class ProcessingOptions {
     /** Satellite clock stability (sec/sec) */
     public double sclkstab = 5E-12;
 
-    /** AR validation threshold */
-    public double[] thresar = {3.0, 0.25, 0.0, 1E-9, 1E-5, 3.0, 3.0, 0.0};
+    /** AR validation threshold ([7]=post-fix phase RMS threshold for BLS, m) */
+    public double[] thresar = {3.0, 0.25, 0.0, 1E-9, 1E-5, 3.0, 3.0, 0.015};
 
     /** Elevation mask of AR for rising satellite (deg) */
     public double elmaskar = 0.0;
@@ -184,6 +184,9 @@ public class ProcessingOptions {
 
     /** PPP option string */
     public String pppopt = "";
+
+    /** BLS epoch sub-sampling factor (0 or 1=none, 10=use every 10th epoch) */
+    public int blsSubsample = 10;
 
     /** Solver type (0:EKF, 1:Batch Least Squares) */
     public int solver = 0;
