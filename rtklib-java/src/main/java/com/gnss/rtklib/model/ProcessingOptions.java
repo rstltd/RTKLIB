@@ -188,6 +188,15 @@ public class ProcessingOptions {
     /** BLS epoch sub-sampling factor (0 or 1=none, 10=use every 10th epoch) */
     public int blsSubsample = 10;
 
+    /** Stochastic model type (0: elevation-only, 1: C/N0 SIGMA-epsilon) */
+    public int snrmodel = 0;
+
+    /** AR position validation: max 3D distance fixed-float (m, 0=disable) */
+    public double arposthres = 0.0;
+
+    /** AR chi-square test significance level (0=disable) */
+    public double archisqthres = 0.0;
+
     /** Solver type (0:EKF, 1:Batch Least Squares) */
     public int solver = 0;
 

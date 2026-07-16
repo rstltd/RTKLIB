@@ -159,9 +159,20 @@ public class RinexReader {
      * @throws IOException on file I/O error
      */
     public static List<List<ObsData>> readObs(String filename, Navigation nav, int rcv) throws IOException {
+        return readObs(filename, nav, rcv, Integer.MAX_VALUE);
+    }
+
+    public static List<List<ObsData>> readObs(String filename, Navigation nav, int rcv,
+                                               int maxEpochs) throws IOException {
         if (nav == null) nav = new Navigation();
         List<List<ObsData>> obs = new ArrayList<>();
-        read(filename, rcv, obs, nav);
+        try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
+            RinexHeader hdr = new RinexHeader();
+            if (!readHeader(br, hdr, nav)) return obs;
+            if (hdr.type == 'O') {
+                readObsBody(br, hdr, rcv, obs, nav, maxEpochs);
+            }
+        }
         return obs;
     }
 
@@ -521,6 +532,12 @@ public class RinexReader {
     private static void readObsBody(BufferedReader br, RinexHeader hdr,
                                     int rcv, List<List<ObsData>> obs,
                                     Navigation nav) throws IOException {
+        readObsBody(br, hdr, rcv, obs, nav, Integer.MAX_VALUE);
+    }
+
+    private static void readObsBody(BufferedReader br, RinexHeader hdr,
+                                    int rcv, List<List<ObsData>> obs,
+                                    Navigation nav, int maxEpochs) throws IOException {
         SigInd[] index = new SigInd[RNX_NUMSYS];
         int[] sysList = {SYS_GPS, SYS_GLO, SYS_GAL, SYS_QZS, SYS_SBS, SYS_CMP, SYS_IRN};
         for (int s = 0; s < RNX_NUMSYS; s++) {
@@ -569,6 +586,7 @@ public class RinexReader {
             }
             if (!epochData.isEmpty()) {
                 obs.add(epochData);
+                if (obs.size() >= maxEpochs) break;
             }
         }
     }

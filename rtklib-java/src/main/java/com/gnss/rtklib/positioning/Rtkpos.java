@@ -184,19 +184,30 @@ public final class Rtkpos {
 
         fact *= sysFact(sys);
 
-        double a = fact * opt.err[1];
-        double b = fact * opt.err[2];
         double c = opt.err[3] * bl / 1E4;
         double d = CLIGHT * opt.sclkstab * dt;
-        double sinel = Math.sin(el);
+        double var;
 
-        double var = 2.0 * (a * a + b * b / sinel / sinel + c * c) + d * d;
+        if (opt.snrmodel == 1 && snrRover > 0 && snrBase > 0) {
+            // SIGMA-epsilon: C/N0-driven stochastic model
+            double sigma0 = fact * opt.err[1];
+            double cn0ref = opt.err[5];
+            double varRov = sigma0 * sigma0 * Math.pow(10, -0.1 * (snrRover - cn0ref));
+            double varBas = sigma0 * sigma0 * Math.pow(10, -0.1 * (snrBase - cn0ref));
+            var = varRov + varBas + 2.0 * c * c + d * d;
+        } else {
+            // Elevation-angle model (default)
+            double a = fact * opt.err[1];
+            double b = fact * opt.err[2];
+            double sinel = Math.sin(el);
+            var = 2.0 * (a * a + b * b / sinel / sinel + c * c) + d * d;
 
-        if (opt.err[6] > 0 && snrRover > 0 && snrBase > 0) {
-            double snrMax = opt.err[5];
-            double e = fact * opt.err[6];
-            var += e * e * (Math.pow(10, 0.1 * Math.max(snrMax - snrRover, 0))
-                          + Math.pow(10, 0.1 * Math.max(snrMax - snrBase, 0)));
+            if (opt.err[6] > 0 && snrRover > 0 && snrBase > 0) {
+                double snrMax = opt.err[5];
+                double e = fact * opt.err[6];
+                var += e * e * (Math.pow(10, 0.1 * Math.max(snrMax - snrRover, 0))
+                              + Math.pow(10, 0.1 * Math.max(snrMax - snrBase, 0)));
+            }
         }
         if (opt.ionoopt == IONOOPT_IFLC) var *= 9.0;
         return var;
@@ -1323,6 +1334,54 @@ public final class Rtkpos {
     }
 
     // ---------------------------------------------------------------
+    // valFixedPos: fixed vs float position consistency check
+    // ---------------------------------------------------------------
+
+    private static boolean valFixedPos(RtkState rtk, double[] xa) {
+        double thres = rtk.opt.arposthres;
+        if (thres <= 0.0) return true;
+        // 3D distance between fixed and float solutions
+        double dist = 0.0;
+        for (int i = 0; i < 3; i++) {
+            double d = xa[i] - rtk.x[i];
+            dist += d * d;
+        }
+        return Math.sqrt(dist) <= thres;
+    }
+
+    // ---------------------------------------------------------------
+    // valChiSquare: post-fit residual chi-square test
+    // ---------------------------------------------------------------
+
+    private static boolean valChiSquare(double[] v, double[] R, int nv,
+                                         double alpha) {
+        if (alpha <= 0.0 || nv < 1) return true;
+        double chi2 = 0.0;
+        for (int i = 0; i < nv; i++) {
+            if (R[i + i * nv] > 0.0) chi2 += v[i] * v[i] / R[i + i * nv];
+        }
+        // Wilson-Hilferty approximation for chi-square critical value
+        double k = nv;
+        double z = invNormCdf(1.0 - alpha);
+        double cb = 1.0 - 2.0 / (9.0 * k);
+        double sb = Math.sqrt(2.0 / (9.0 * k));
+        double x = cb + z * sb;
+        double thres = k * x * x * x;
+        return chi2 <= thres;
+    }
+
+    /** Inverse normal CDF approximation (Abramowitz & Stegun 26.2.23). */
+    private static double invNormCdf(double p) {
+        if (p <= 0.0) return -8.0;
+        if (p >= 1.0) return 8.0;
+        double t = Math.sqrt(-2.0 * Math.log(p < 0.5 ? p : 1.0 - p));
+        double c0 = 2.515517, c1 = 0.802853, c2 = 0.010328;
+        double d1 = 1.432788, d2 = 0.189269, d3 = 0.001308;
+        double x = t - (c0 + c1 * t + c2 * t * t) / (1.0 + d1 * t + d2 * t * t + d3 * t * t * t);
+        return p < 0.5 ? -x : x;
+    }
+
+    // ---------------------------------------------------------------
     // valpos: validation of solution
     // ---------------------------------------------------------------
 
@@ -1507,23 +1566,28 @@ public final class Rtkpos {
         // resolve integer ambiguity by LAMBDA
         if (stat == SOLQ_FLOAT) {
             if (manageAmbLAMBDA(rtk, bias, xa, satArr, nf, ns) > 1) {
-                // verify fixed solution
-                if (zdres(0, obs, nu, rs, dts, var, svh, nav, xa, opt,
-                          yRov, eRov, azelRov, freqRov) != 0) {
-                    System.arraycopy(yRov, 0, y, 0, nf * 2 * nu);
-                    System.arraycopy(eRov, 0, e, 0, 3 * nu);
-                    System.arraycopy(azelRov, 0, azel, 0, 2 * nu);
-                    System.arraycopy(freqRov, 0, freq, 0, nf * nu);
+                // Check A: fixed vs float position consistency
+                if (valFixedPos(rtk, xa)) {
+                    // verify fixed solution residuals
+                    if (zdres(0, obs, nu, rs, dts, var, svh, nav, xa, opt,
+                              yRov, eRov, azelRov, freqRov) != 0) {
+                        System.arraycopy(yRov, 0, y, 0, nf * 2 * nu);
+                        System.arraycopy(eRov, 0, e, 0, 3 * nu);
+                        System.arraycopy(azelRov, 0, azel, 0, 2 * nu);
+                        System.arraycopy(freqRov, 0, freq, 0, nf * nu);
 
-                    int nv = ddres(rtk, obs, dt, xa, Pp, satArr, y, e, azel, freq,
-                                   iuArr, irArr, ns, v, null, Rm, vflg);
-                    if (valpos(rtk, v, Rm, vflg, nv, 4.0)) {
-                        if (++rtk.nfix >= rtk.opt.minfix) {
-                            if (rtk.opt.modear == ARMODE_FIXHOLD) {
-                                holdamb(rtk, xa);
+                        int nv = ddres(rtk, obs, dt, xa, Pp, satArr, y, e, azel, freq,
+                                       iuArr, irArr, ns, v, null, Rm, vflg);
+                        // Check B: chi-square test on post-fit residuals
+                        if (valChiSquare(v, Rm, nv, opt.archisqthres) &&
+                            valpos(rtk, v, Rm, vflg, nv, 4.0)) {
+                            if (++rtk.nfix >= rtk.opt.minfix) {
+                                if (rtk.opt.modear == ARMODE_FIXHOLD) {
+                                    holdamb(rtk, xa);
+                                }
                             }
+                            stat = SOLQ_FIX;
                         }
-                        stat = SOLQ_FIX;
                     }
                 }
             }

@@ -211,6 +211,9 @@ public class ConfigReader {
         opts.add(doubleOpt("stats-prntrop",    "m", v -> popt.prn[2] = v));
         opts.add(doubleOpt("stats-prnpos",     "m", v -> popt.prn[5] = v));
         opts.add(doubleOpt("stats-clkstab",    "s/s", v -> popt.sclkstab = v));
+        opts.add(enumOpt("stats-snrmodel",     WEIGHTOPT, v -> popt.snrmodel = v));
+        opts.add(doubleOpt("pos2-arposthres",  "", v -> popt.arposthres = v));
+        opts.add(doubleOpt("pos2-archisqthres","", v -> popt.archisqthres = v));
 
         // ant1- options
         opts.add(enumOpt("ant1-postype",    POSOPT, v -> popt.rovpos = v));

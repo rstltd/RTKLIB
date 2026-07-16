@@ -1,6 +1,7 @@
 package com.gnss.rtklib.positioning;
 
 import com.gnss.rtklib.PostProcessor;
+import com.gnss.rtklib.core.Coord;
 import com.gnss.rtklib.core.GTime;
 import com.gnss.rtklib.io.ConfigReader;
 import com.gnss.rtklib.model.ProcessingOptions;
@@ -90,6 +91,10 @@ class RtkStaticTest {
                 javaStats[0], cStats[0]);
         System.out.printf("%-25s %12.4f %12.4f%n", "3D RMS 2nd half (m)",
                 javaStats[1], cStats[1]);
+        System.out.printf("%-25s %12.4f %12.4f%n", "H RMS 2nd half (m)",
+                javaStats[5], cStats[5]);
+        System.out.printf("%-25s %12.4f %12.4f%n", "V RMS 2nd half (m)",
+                javaStats[6], cStats[6]);
         System.out.printf("%-25s %12d ms%n", "Elapsed time", elapsed);
         System.out.printf("=====================================================%n");
 
@@ -118,32 +123,40 @@ class RtkStaticTest {
     }
 
     /**
-     * Compute statistics: [rmsAll, rms2ndHalf, fixRate, fixCount, floatCount]
+     * Compute statistics: [rmsAll, rms2ndHalf, fixRate, fixCount, floatCount, hRms2, vRms2]
      */
     private double[] computeStats(List<double[]> sols, double[] ref) {
         double sumSq = 0, sumSq2 = 0;
+        double sumH2 = 0, sumV2 = 0;
         int n = sols.size();
         int half = n / 2;
         int fixCount = 0;
         int floatCount = 0;
+        double[] refPos = Coord.ecef2pos(ref);
 
         for (int i = 0; i < n; i++) {
             double[] s = sols.get(i);
-            double dx = s[1] - ref[0];
-            double dy = s[2] - ref[1];
-            double dz = s[3] - ref[2];
-            double d3d = dx * dx + dy * dy + dz * dz;
+            double[] dr = {s[1] - ref[0], s[2] - ref[1], s[3] - ref[2]};
+            double d3d = dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2];
             sumSq += d3d;
-            if (i >= half) sumSq2 += d3d;
+            if (i >= half) {
+                sumSq2 += d3d;
+                double[] enu = Coord.ecef2enu(refPos, dr);
+                sumH2 += enu[0] * enu[0] + enu[1] * enu[1];
+                sumV2 += enu[2] * enu[2];
+            }
             if ((int) s[4] == SOLQ_FIX) fixCount++;
             if ((int) s[4] == SOLQ_FLOAT) floatCount++;
         }
 
         double rmsAll = n > 0 ? Math.sqrt(sumSq / n) : 0;
-        double rms2 = (n - half) > 0 ? Math.sqrt(sumSq2 / (n - half)) : 0;
+        int n2 = n - half;
+        double rms2 = n2 > 0 ? Math.sqrt(sumSq2 / n2) : 0;
+        double hRms2 = n2 > 0 ? Math.sqrt(sumH2 / n2) : 0;
+        double vRms2 = n2 > 0 ? Math.sqrt(sumV2 / n2) : 0;
         double fixRate = n > 0 ? (double) fixCount / n : 0;
 
-        return new double[]{rmsAll, rms2, fixRate, fixCount, floatCount};
+        return new double[]{rmsAll, rms2, fixRate, fixCount, floatCount, hRms2, vRms2};
     }
 
     private List<double[]> loadPos(Path posFile) throws Exception {

@@ -260,20 +260,21 @@ public class PostProcessor {
             return -1;
         }
 
-        // Read rover observations (rcv=1)
+        // Read rover observations (rcv=1), limiting to maxEpochs to save memory
         List<List<ObsData>> roverEpochs;
         try {
-            roverEpochs = RinexReader.readObs(roverObsFile, nav, 1);
+            roverEpochs = RinexReader.readObs(roverObsFile, nav, 1, maxEpochs);
         } catch (Exception e) {
             System.err.printf("error: failed to read rover obs: %s (%s)%n",
                               roverObsFile, e.getMessage());
             return -1;
         }
 
-        // Read base observations (rcv=2)
+        // Read base observations (rcv=2), limit to rover epoch count + margin for time sync
+        int baseLimit = maxEpochs < Integer.MAX_VALUE / 2 ? maxEpochs * 2 : Integer.MAX_VALUE;
         List<List<ObsData>> baseEpochs;
         try {
-            baseEpochs = RinexReader.readObs(baseObsFile, nav, 2);
+            baseEpochs = RinexReader.readObs(baseObsFile, nav, 2, baseLimit);
         } catch (Exception e) {
             System.err.printf("error: failed to read base obs: %s (%s)%n",
                               baseObsFile, e.getMessage());
@@ -283,9 +284,6 @@ public class PostProcessor {
         if (roverEpochs == null || roverEpochs.isEmpty()) {
             System.err.println("error: no rover observation data");
             return -1;
-        }
-        if (maxEpochs < roverEpochs.size()) {
-            roverEpochs = roverEpochs.subList(0, maxEpochs);
         }
         if (baseEpochs == null || baseEpochs.isEmpty()) {
             System.err.println("error: no base observation data");
