@@ -669,7 +669,7 @@ typedef struct {        /* receiver raw data control type */
     int ephset;         /* update set of ephemeris (0-1) */
     sbsmsg_t sbsmsg;    /* SBAS message */
     char msgtype[256];  /* last message type */
-    uint8_t subfrm[MAXSAT][380]; /* subframe buffer */
+    uint8_t subfrm[MAXSAT][418]; /* subframe buffer (BDS D2 needs 10 sf1 pages*38=380 + sf5 page102 at 380-417) */
     double lockt[MAXSAT][NFREQ+NEXOBS]; /* lock time (s) */
     unsigned char lockflag[MAXSAT][NFREQ+NEXOBS]; /* used for carrying forward cycle slip */
     double icpp[MAXSAT],off[MAXSAT],icpc; /* carrier params for ss2 */
