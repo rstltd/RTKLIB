@@ -12,9 +12,14 @@
 # exercise the solver + .stat output path.
 # INPUT11 = rover obs + nav ; INPUT12 = base obs ; -r ... = base ecef.
 #
-# NOTE: available test/data cannot exercise MOVEB / FIXED / PPP_* (no matching
-# precise-product + obs pairing, and no upstream case uses those modes here).
-# See README.md "Coverage gaps".
+# PPP note (cases 28-30): these run PPP mode with BROADCAST ephemeris (no matching
+# precise products exist in test/data), so they exercise the pppos() estimation
+# core (undifferenced residuals, iono-free combination, tropo/clock states, the
+# PPP filter) and produce Q=6 (SOLQ_PPP) output -- closing the "pppos() has zero
+# characterization coverage" gap -- but NOT the precise-orbit/clock (preceph) or
+# SSR-correction paths, which still need a matched precise dataset. ppp-fixed
+# (-p 9) is omitted: with the stub ppp_ar and no precise products it yields no
+# solution rows. MOVEB/FIXED remain uncovered. See README.md "Coverage gaps".
 01|KINEMA|default-kinema|@D@/rinex/07590920.05o @D@/rinex/30400920.05n
 02|KINEMA|kinema-ecef|-t -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
 03|DGPS|dgps|-t -p 1 -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
@@ -42,3 +47,6 @@
 25|STATIC|conf-opts4-static-y2|-k @C@/opts4.conf -y 2 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
 26|STATIC|stat-static-outstat2|-k @SC@/stat_static.conf -o @OUT@ @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
 27|KINEMA|stat-kinema-outstat2|-k @SC@/stat_kinema.conf -o @OUT@ @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+28|PPP_STATIC|ppp-static-brdc|-t -p 8 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+29|PPP_KINEMA|ppp-kinematic-brdc|-t -p 7 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+30|PPP_STATIC|ppp-static-brdc-ecef|-t -p 8 -e @D@/rinex/07590920.05o @D@/rinex/30400920.05n

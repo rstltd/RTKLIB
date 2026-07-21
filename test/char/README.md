@@ -53,13 +53,22 @@ confirms this.
 
 ## Coverage gaps (fail-loud)
 
-`cases.txt` exercises **SINGLE, DGPS, KINEMA, STATIC, STATIC_START** only. The
-bundled `test/data` cannot drive **MOVEB, FIXED, PPP_KINEMA, PPP_STATIC,
-PPP_FIXED**: no upstream case uses those modes here, and there is no obs file
-paired with the precise products (sp3/clk are 2009/2010; the RINEX obs are
-2005). The coverage table printed by every run states this explicitly. Closing
-the PPP gap requires adding a matched obs + precise-product dataset — do that
-before relying on this net to guard any PPP-path refactor.
+`cases.txt` exercises **SINGLE, DGPS, KINEMA, STATIC, STATIC_START** and, via
+cases 28-30, **PPP_KINEMA / PPP_STATIC**. The coverage table printed by every
+run states which of the 10 PMODEs are covered.
+
+The PPP cases run PPP mode with **broadcast** ephemeris (there is no obs file in
+`test/data` paired with the bundled precise products — sp3/clk are 2009/2010,
+the RINEX obs are 2005). They therefore exercise the `pppos()` estimation core
+(undifferenced residuals, iono-free combination, tropo/clock states, the PPP
+filter) and pin its Q=6 output — closing the "`pppos()` has zero
+characterization coverage" gap — but do **not** exercise the precise-orbit/clock
+(`preceph`) or SSR-correction paths. Fully covering those still needs a matched
+obs + precise-product dataset.
+
+Still uncovered: **MOVEB, FIXED, PPP_FIXED** (the last yields no solution rows
+with the stub `ppp_ar` and no precise products). Add those before relying on the
+net to guard a refactor of those specific paths.
 
 ## RTCM3 overflow regression test
 
