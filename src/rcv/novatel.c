@@ -1487,7 +1487,7 @@ extern int input_oem3f(raw_t *raw, FILE *fp)
     if (fread(raw->buff+3,1,9,fp)<9) return -2;
     raw->nbyte=12;
     
-    if ((raw->len=U4(raw->buff+8))>MAXRAWLEN) {
+    if ((raw->len=U4(raw->buff+8))>MAXRAWLEN||raw->len<12) {
         trace(2,"oem3 length error: len=%d\n",raw->len);
         raw->nbyte=0;
         return -1;

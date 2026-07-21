@@ -688,6 +688,8 @@ static int decode_trkmeas(raw_t *raw)
         /* check phase lock */
         if (!(flag&0x20)) continue;
         
+        if (n>=MAXOBS) break;
+        
         raw->obs.data[n].time=time;
         raw->obs.data[n].sat=sat;
         raw->obs.data[n].P[0]=tau*CLIGHT;
@@ -814,6 +816,8 @@ static int decode_trkd5(raw_t *raw)
         
         /* check phase lock */
         if (!(flag&0x08)) continue;
+        
+        if (n>=MAXOBS) break;
         
         raw->obs.data[n].time=time;
         raw->obs.data[n].sat=sat;

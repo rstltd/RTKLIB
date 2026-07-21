@@ -1045,7 +1045,7 @@ static int decode_meas3ranges(raw_t *raw) {
             for (;j < MEAS3_SIG_MAX; j++)
                 sigTable[navsys][j] = CODE_NONE;
 
-            for (int svid = 0; svid < MEAS3_SAT_MAX && satCnt < nSats; svid++)
+            for (int svid = 0; svid < MEAS3_SAT_MAX && satCnt < nSats && n < MAXOBS; svid++)
             {
                 if ((satMask & (1ULL << svid)) == 0)
                     continue;
@@ -1214,7 +1214,7 @@ static int decode_meas3ranges(raw_t *raw) {
                 }
 
                 /* keep reference measurement to decode the delta measurements */
-                if (TOW % refEpochInterval == 0  && satNo > 0)
+                if (TOW % refEpochInterval == 0  && satNo > 0 && masterFreqIndex >= 0)
                 {
                     if ((masterFreqIndex > NFREQ+NEXOBS) || (masterFreqIndex < 0))
                         trace(2, "sbf meas3ranges index out of bounds: %d\n", masterFreqIndex);
@@ -1230,7 +1230,7 @@ static int decode_meas3ranges(raw_t *raw) {
                 }
 
                 // update PLL lock time
-                if (satNo > 0  && raw->lockt[satNo-1][masterFreqIndex] > sbf->meas3_refEpoch.lockt[navsys][svid][masterFreqIndex])
+                if (satNo > 0  && masterFreqIndex >= 0 && raw->lockt[satNo-1][masterFreqIndex] > sbf->meas3_refEpoch.lockt[navsys][svid][masterFreqIndex])
                     sbf->meas3_refEpoch.lockt[navsys][svid][masterFreqIndex] = raw->lockt[satNo-1][masterFreqIndex];
 
                 /* decode slave data */
@@ -1347,7 +1347,7 @@ static int decode_meas3ranges(raw_t *raw) {
                         };
 
                         /* keep reference measurement to decode delta measurements */
-                        if (TOW % refEpochInterval == 0 && satNo > 0)
+                        if (TOW % refEpochInterval == 0 && satNo > 0 && slaveFreqIndex >= 0)
                         {
                             if ((slaveFreqIndex > NFREQ+NEXOBS) || (slaveFreqIndex < 0))
                                 trace(2, "sbf meas3ranges index out of bounds: %d\n", slaveFreqIndex);
@@ -1360,7 +1360,7 @@ static int decode_meas3ranges(raw_t *raw) {
                             sbf->meas3_refEpoch.lockt[navsys][svid][slaveFreqIndex] = raw->lockt[satNo-1][slaveFreqIndex];
                         }
 
-                        if (raw->lockt[satNo-1][slaveFreqIndex] > sbf->meas3_refEpoch.lockt[navsys][svid][slaveFreqIndex])
+                        if (satNo > 0 && slaveFreqIndex >= 0 && raw->lockt[satNo-1][slaveFreqIndex] > sbf->meas3_refEpoch.lockt[navsys][svid][slaveFreqIndex])
                             sbf->meas3_refEpoch.lockt[navsys][svid][slaveFreqIndex] = raw->lockt[satNo-1][slaveFreqIndex];
 
                         slaveCnt++;
@@ -3357,6 +3357,7 @@ static int decode_sbsprnmask(raw_t *raw)
 
     raw->nav.sbssat.iodp = U1(p+7);
     raw->nav.sbssat.nsat = U1(p+8);
+    if (raw->nav.sbssat.nsat > MAXSAT) raw->nav.sbssat.nsat = MAXSAT;
 
     if (raw->outtype) {
         sprintf(raw->msgtype, "SBF SBAS PRN Mask from PRN=%d", prn);
@@ -3496,6 +3497,8 @@ static int decode_sbsionodelay(raw_t *raw)
         j = U1(p+12+i*sbLength);
         give = U1(p+12+i*sbLength+1);
 
+        if (j >= MAXNIGP) continue;
+
         raw->nav.sbsion[band].igp[j].t0 = gpst2time(week, tow);
         raw->nav.sbsion[band].igp[j].delay = R4(p+12+i*sbLength+4);
         raw->nav.sbsion[band].igp[j].give = give;
@@ -3542,6 +3545,7 @@ static int decode_sbsigpmask(raw_t *raw) /* TODO: verify this function */
 
     raw->nav.sbsion[band].iodi = U1(p+9);
     raw->nav.sbsion[band].nigp = U1(p+10);
+    if (raw->nav.sbsion[band].nigp > MAXNIGP) raw->nav.sbsion[band].nigp = MAXNIGP;
 
     for (n=0; n<raw->nav.sbsion[band].nigp; n++)
     {
@@ -3593,6 +3597,7 @@ static int decode_sbslongcorrh(raw_t* raw)
     for (i=0; i<count; i++)
     {
         no = U1(p+12+i*sbLength+1);
+        if (no < 1 || no > MAXSAT) continue;
         raw->nav.sbssat.sat[no-1].lcorr.iode    = U1(p+12+i*sbLength+ 3);
         raw->nav.sbssat.sat[no-1].lcorr.dpos[0] = R4(p+12+i*sbLength+ 4);
         raw->nav.sbssat.sat[no-1].lcorr.dpos[1] = R4(p+12+i*sbLength+ 8);
@@ -3600,9 +3605,9 @@ static int decode_sbslongcorrh(raw_t* raw)
         raw->nav.sbssat.sat[no-1].lcorr.daf0 = R4(p+12+i*sbLength+28);
         if (U1(p+12+i*sbLength+0) == 1)
         {
-            raw->nav.sbssat.sat[no-1].lcorr.dvel[i] = R4(p+12+i*sbLength+16);
-            raw->nav.sbssat.sat[no-1].lcorr.dvel[i] = R4(p+12+i*sbLength+20);
-            raw->nav.sbssat.sat[no-1].lcorr.dvel[i] = R4(p+12+i*sbLength+24);
+            raw->nav.sbssat.sat[no-1].lcorr.dvel[0] = R4(p+12+i*sbLength+16);
+            raw->nav.sbssat.sat[no-1].lcorr.dvel[1] = R4(p+12+i*sbLength+20);
+            raw->nav.sbssat.sat[no-1].lcorr.dvel[2] = R4(p+12+i*sbLength+24);
 
             raw->nav.sbssat.sat[no-1].lcorr.daf1 = R4(p+12+i*sbLength+32);
 

@@ -525,6 +525,8 @@ static int decode_msgobs(raw_t *raw) {
       }
     }
 
+    if (ii >= MAXOBS) continue;
+
     raw->obuf.data[ii].time = time;
     raw->obuf.data[ii].sat = (unsigned char)sat;
 

@@ -2128,6 +2128,8 @@ static void UnwrapGenout(rt17_t *rt17)
     while (InputLengthTotal > 0)
     {
         InputLength = p_in[3] + 6;
+        if (p_in[3] < 3) break;
+        if (InputLength > InputLengthTotal) break;
         OutputLength = p_in[3] - 3;
         memmove(p_out, p_in + 7, OutputLength);
         p_in += InputLength;
@@ -2165,6 +2167,8 @@ static void UnwrapRawdata(rt17_t *rt17, uint32_t *rif)
            tracet(2, "RT17: Inconsistent Record Interpretation Flags within a single RAWDATA message.\n");
 
         InputLength = p_in[3] + 6;
+        if (p_in[3] < 4) break;
+        if (InputLength > InputLengthTotal) break;
         OutputLength = p_in[3] - 4;
         memmove(p_out, p_in + 8, OutputLength);
         p_in += InputLength;
