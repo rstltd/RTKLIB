@@ -1,5 +1,6 @@
 work/
-# stray side-outputs if a case is ever run from this dir directly
-*_events.pos
-*.stat
-*.trace
+# stray side-outputs if a case is ever run from THIS dir directly (root-only,
+# so committed golden/*.stat is not excluded)
+/*_events.pos
+/*.stat
+/*.trace

@@ -1,8 +1,15 @@
 # Characterization corpus for rnx2rtkp
 # Format:  id | pmode | label | args
-#   @D@ -> <repo>/test/data      @C@ -> <repo>/app/consapp/rnx2rtkp/test
+#   @D@ -> <repo>/test/data   @C@ -> <repo>/app/consapp/rnx2rtkp/test   @SC@ -> this dir's conf/
 #   solution is captured from stdout; -o / -x / shell redirection removed.
-# Derived from app/consapp/CMakeLists.txt rnx2rtkp_test1..25 (upstream's own cases).
+#   `-o @OUT@` writes the solution to a file so a sibling <out>.stat can also be
+#   captured & compared (cases that enable out-outstat).
+# Cases 01-25 derived from app/consapp/CMakeLists.txt rnx2rtkp_test1..25.
+# NOTE: cases 22-25 use the upstream opts*.conf, whose relative file-satantfile
+# path does not resolve from this dir, so they characterize the "missing antenna
+# file -> fatal error -> empty output, exit 1" path (golden .pos empty, rc 1).
+# Cases 26-27 use the self-contained conf/ files (no external deps) and DO
+# exercise the solver + .stat output path.
 # INPUT11 = rover obs + nav ; INPUT12 = base obs ; -r ... = base ecef.
 #
 # NOTE: available test/data cannot exercise MOVEB / FIXED / PPP_* (no matching
@@ -33,3 +40,5 @@
 23|KINEMA|conf-opts2-kinema|-k @C@/opts2.conf @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
 24|KINEMA|conf-opts3-kinema-y2|-k @C@/opts3.conf -y 2 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
 25|STATIC|conf-opts4-static-y2|-k @C@/opts4.conf -y 2 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+26|STATIC|stat-static-outstat2|-k @SC@/stat_static.conf -o @OUT@ @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+27|KINEMA|stat-kinema-outstat2|-k @SC@/stat_kinema.conf -o @OUT@ @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o

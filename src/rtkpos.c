@@ -99,10 +99,14 @@ static double ar_poly_coeffs[3][5] = {
     {-2.22600390e-02,  3.23169103e-01, -1.39837429e+00, 2.19282996e+00, -5.34583971e-02}};
 
 /* global variables ----------------------------------------------------------*/
-static int statlevel=0;          /* rtk status output level (0:off) */
-static FILE *fp_stat=NULL;       /* rtk status file pointer */
-static char file_stat[1024]="";  /* rtk status file original path */
-static gtime_t time_stat={0};    /* rtk status file time */
+/* rtk solution-status output context (rtk_t.solstat is an opaque void* to this) */
+typedef struct {
+    int level;                   /* status output level (0:off,1:states,2:residuals) */
+    FILE *fp;                    /* status file pointer */
+    char file[1024];             /* status file original path */
+    gtime_t time;                /* status file time */
+} statout_t;
+static statout_t solstat_default={0,NULL,"",{0}}; /* process-default status output */
 
 /* open solution status file ---------------------------------------------------
 * open solution status file and set output level
@@ -190,13 +194,13 @@ extern int rtkopenstat(const char *file, int level)
 
     reppath(file,path,time,"","");
 
-    if (!(fp_stat=fopen(path,"w"))) {
+    if (!(solstat_default.fp=fopen(path,"w"))) {
         trace(1,"rtkopenstat: file open error path=%s\n",path);
         return 0;
     }
-    strcpy(file_stat,file);
-    time_stat=time;
-    statlevel=level;
+    strcpy(solstat_default.file,file);
+    solstat_default.time=time;
+    solstat_default.level=level;
     return 1;
 }
 /* close solution status file --------------------------------------------------
@@ -208,10 +212,10 @@ extern void rtkclosestat(void)
 {
     trace(3,"rtkclosestat:\n");
 
-    if (fp_stat) fclose(fp_stat);
-    fp_stat=NULL;
-    file_stat[0]='\0';
-    statlevel=0;
+    if (solstat_default.fp) fclose(solstat_default.fp);
+    solstat_default.fp=NULL;
+    solstat_default.file[0]='\0';
+    solstat_default.level=0;
 }
 /* Write solution status to buffer -------------------------------------------*/
 extern int rtkoutstat(rtk_t *rtk, int level, char *buff)
@@ -323,23 +327,23 @@ extern int rtkoutstat(rtk_t *rtk, int level, char *buff)
     return (int)(p-buff);
 }
 /* swap solution status file -------------------------------------------------*/
-static void swapsolstat(void)
+static void swapsolstat(statout_t *ss)
 {
     gtime_t time=utc2gpst(timeget());
     char path[1024];
 
-    if ((int)(time2gpst(time     ,NULL)/INT_SWAP_STAT)==
-        (int)(time2gpst(time_stat,NULL)/INT_SWAP_STAT)) {
+    if ((int)(time2gpst(time    ,NULL)/INT_SWAP_STAT)==
+        (int)(time2gpst(ss->time,NULL)/INT_SWAP_STAT)) {
         return;
     }
-    time_stat=time;
+    ss->time=time;
 
-    if (!reppath(file_stat,path,time,"","")) {
+    if (!reppath(ss->file,path,time,"","")) {
         return;
     }
-    if (fp_stat) fclose(fp_stat);
+    if (ss->fp) fclose(ss->fp);
 
-    if (!(fp_stat=fopen(path,"w"))) {
+    if (!(ss->fp=fopen(path,"w"))) {
         trace(2,"swapsolstat: file open error path=%s\n",path);
         return;
     }
@@ -349,19 +353,20 @@ static void swapsolstat(void)
 static void outsolstat(rtk_t *rtk,const nav_t *nav)
 {
     (void)nav;
-    if (statlevel<=0||!fp_stat||!rtk->sol.stat) return;
+    statout_t *ss=(statout_t *)rtk->solstat;
+    if (!ss||ss->level<=0||!ss->fp||!rtk->sol.stat) return;
 
     trace(3,"outsolstat:\n");
 
     /* swap solution status file */
-    swapsolstat();
+    swapsolstat(ss);
 
     /* write solution status */
     char buff[MAXSOLMSG+1];
-    int n=rtkoutstat(rtk,statlevel,buff);
+    int n=rtkoutstat(rtk,ss->level,buff);
     buff[n]='\0';
-    
-    fputs(buff,fp_stat);
+
+    fputs(buff,ss->fp);
 }
 /* save error message --------------------------------------------------------*/
 static void errmsg(rtk_t *rtk, const char *format, ...)
@@ -2268,6 +2273,7 @@ extern void rtkinit(rtk_t *rtk, const prcopt_t *opt)
     rtk->initial_mode=rtk->opt.mode;
     rtk->sol.thres=(float)opt->thresar[0];
     rtk->intpres_nb=0;
+    rtk->solstat=&solstat_default;
 }
 /* free rtk control ------------------------------------------------------------
 * free memory for rtk control struct
