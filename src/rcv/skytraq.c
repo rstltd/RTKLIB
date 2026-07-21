@@ -326,6 +326,7 @@ static int decode_stqrawx(raw_t *raw)
         sys = sky_sys(U1(p)&0xF);
         sig = sky_sig(sys,(U1(p)>>4)&0xF);
         idx=code2idx(sys,sig);
+        if (idx<0) continue; /* unsupported/unknown signal (e.g. IRN) -> avoid OOB index */
         prn=U1(p+1);
         if (!(sat=satno(sys,prn))) {
             trace(2,"stq raw satellite number error: sys=%d prn=%d\n",sys,prn);

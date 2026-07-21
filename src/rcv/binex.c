@@ -180,7 +180,7 @@ static int decode_bnx_00(raw_t *raw, uint8_t *buff, int len)
             p+=getbnxi(p,&flen); /* field length*/
             sprintf(str,"%.*s",MIN(flen,MAXANT-1),(char *)p);
             p+=flen;
-            if (raw->outtype) {
+            if (raw->outtype && msg-raw->msgtype<(int)sizeof(raw->msgtype)-80) {
                 msg+=sprintf(msg," [%02x]%s",fid,str);
             }
             if      (fid==0x08) strcpy(raw->sta.name   ,str);
@@ -200,7 +200,7 @@ static int decode_bnx_00(raw_t *raw, uint8_t *buff, int len)
             for (i=0;i<3;i++) {
                 x[i]=R8(p); p+=8;
             }
-            if (raw->outtype) {
+            if (raw->outtype && msg-raw->msgtype<(int)sizeof(raw->msgtype)-80) {
                 msg+=sprintf(msg," [%02x]%.3f/%.3f/%.3f",fid,x[0],x[1],x[2]);
             }
             if (fid==0x1d) { /* antenna ECEF X/Y/Z position */

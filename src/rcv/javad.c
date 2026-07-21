@@ -1679,6 +1679,7 @@ static int decode_TC(raw_t *raw)
         if (!settag(raw->obuf.data+i,raw->time)) continue;
         
         sat=raw->obuf.data[i].sat;
+        if (sat<1||sat>MAXSAT) continue;
         tt_p=(uint16_t)raw->lockt[sat-1][0];
         
         char tstr[40];
