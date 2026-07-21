@@ -1,0 +1,5 @@
+work/
+# stray side-outputs if a case is ever run from this dir directly
+*_events.pos
+*.stat
+*.trace
