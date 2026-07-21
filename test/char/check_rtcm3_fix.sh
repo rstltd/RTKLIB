@@ -27,7 +27,7 @@ fi
 
 echo "== build 2/2: buggy variant (clamp stripped) =="
 # Strip the two/three clamp lines to reconstruct the pre-fix vulnerable code.
-grep -v 'int)sizeof(des)-1' "$SRC/rtcm3.c" | grep -v 'int)sizeof(sno)-1' > "$TMP/rtcm3_buggy.c"
+grep -v '>=(int)sizeof(' "$SRC/rtcm3.c" > "$TMP/rtcm3_buggy.c"
 $CC $CFLAGS -DRTCM3_UNDER_TEST="\"$TMP/rtcm3_buggy.c\"" "$HERE/rtcm3_antenna_test.c" \
     $DEPS -lm -o "$TMP/buggy" || { echo "compile(buggy) FAILED"; exit 2; }
 if ASAN_OPTIONS=detect_leaks=0 "$TMP/buggy" >"$TMP/buggy.log" 2>&1; then
