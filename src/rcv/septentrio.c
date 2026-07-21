@@ -1466,16 +1466,23 @@ int decode_meas3Doppler(raw_t* raw)
 
         masterFreqIndex = sbf->meas3_freqAssignment[navsys][svid][0];
 
-        double freqMaster = code2freq(sys, raw->obuf.data[n].code[masterFreqIndex], raw->obuf.data[n].freq - 7);
-
-        raw->obuf.data[n].D[masterFreqIndex] = (float)(-(prRate + (int32_t)sbf->meas3_refEpoch.prRate[navsys][svid] * 64) * 0.001 / (CLIGHT/freqMaster));
+        /* masterFreqIndex is -1 when the reference master signal was unmapped;
+           guard the frequency-indexed obs accesses but keep meas3_DopplerPrRate
+           unconditional so the buffer offset stays in sync. */
+        double freqMaster = 0;
+        if (masterFreqIndex >= 0) {
+            freqMaster = code2freq(sys, raw->obuf.data[n].code[masterFreqIndex], raw->obuf.data[n].freq - 7);
+            raw->obuf.data[n].D[masterFreqIndex] = (float)(-(prRate + (int32_t)sbf->meas3_refEpoch.prRate[navsys][svid] * 64) * 0.001 / (CLIGHT/freqMaster));
+        }
         for (int i = 1; i<MEAS3_SIG_MAX; i++) {
             slaveFreqIndex = sbf->meas3_freqAssignment[navsys][svid][i];
             if (slaveFreqIndex < 0)
                 break;
             prRate = meas3_DopplerPrRate(raw, &offset);
+            if (masterFreqIndex >= 0) {
             double freqSlave = code2freq(sys, raw->obuf.data[n].code[slaveFreqIndex], raw->obuf.data[n].freq - 7);
             raw->obuf.data[n].D[slaveFreqIndex] = (float)((raw->obuf.data[n].D[masterFreqIndex] * (CLIGHT/freqMaster) * 1000 - prRate) * 0.001 / (CLIGHT/freqSlave));
+            }
         }
     }
 
@@ -1522,7 +1529,8 @@ int decode_meas3CN(raw_t* raw)
         masterFreqIndex = sbf->meas3_freqAssignment[navsys][svid][0];
 
         uint8_t mc = (U1(raw->buff + 16 + offset / 2) >> ((offset % 2) * 4)) & 0xf;
-        raw->obuf.data[n].SNR[masterFreqIndex] += mc * 0.0625 - 0.5;
+        if (masterFreqIndex >= 0)  /* -1 when reference master unmapped; keep offset++ unconditional */
+            raw->obuf.data[n].SNR[masterFreqIndex] += mc * 0.0625 - 0.5;
         offset++;
         for (int i = 1; i<MEAS3_SIG_MAX; i++) {
             slaveFreqIndex = sbf->meas3_freqAssignment[navsys][svid][i];
