@@ -408,7 +408,7 @@ static void decode_obsh(FILE *fp, char *buff, double ver, int *tsys,
     else if (strstr(label,"CENTER OF MASS: XYZ" )) ; /* opt ver.3 */
     else if (strstr(label,"SYS / # / OBS TYPES" )) { /* ver.3 */
         const char *p = strchr(syscodes,buff[0]);
-        if (!p) {
+        if (!p||!buff[0]) {  /* strchr matches the NUL terminator: buff[0]==0 -> i==RNX_NUMSYS (OOB) */
             trace(2,"invalid system code: sys=%c\n",buff[0]);
             return;
         }

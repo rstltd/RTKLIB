@@ -1078,11 +1078,16 @@ static int decode_type1033(rtcm_t *rtcm)
     if (!test_staid(rtcm,staid)) return -1;
     
     sprintf(rtcm->sta.name,"%04d",staid);
+    if (n >=(int)sizeof(des)) n =(int)sizeof(des)-1;
     strncpy(rtcm->sta.antdes, des,n ); rtcm->sta.antdes [n] ='\0';
     rtcm->sta.antsetup=setup;
+    if (m >=(int)sizeof(sno)) m =(int)sizeof(sno)-1;
     strncpy(rtcm->sta.antsno, sno,m ); rtcm->sta.antsno [m] ='\0';
+    if (n1>=(int)sizeof(rec)) n1=(int)sizeof(rec)-1;
     strncpy(rtcm->sta.rectype,rec,n1); rtcm->sta.rectype[n1]='\0';
+    if (n2>=(int)sizeof(ver)) n2=(int)sizeof(ver)-1;
     strncpy(rtcm->sta.recver, ver,n2); rtcm->sta.recver [n2]='\0';
+    if (n3>=(int)sizeof(rsn)) n3=(int)sizeof(rsn)-1;
     strncpy(rtcm->sta.recsno, rsn,n3); rtcm->sta.recsno [n3]='\0';
     
     trace(3,"rtcm3 1033: ant=%s:%s rec=%s:%s:%s\n",des,sno,rec,ver,rsn);
@@ -2127,7 +2132,7 @@ static void save_msm_obs(rtcm_t *rtcm, int sys, msm_h_t *h, const double *r,
             fcn=-8; /* no glonass fcn info */
             if (ex&&ex[i]<=13) {
                 fcn=ex[i]-7;
-                if (!rtcm->nav.glo_fcn[prn-1]) {
+                if (MINPRNGLO<=prn&&prn<=MAXPRNGLO&&!rtcm->nav.glo_fcn[prn-1]) {
                     rtcm->nav.glo_fcn[prn-1]=fcn+8; /* fcn+8 */
                 }
             }
