@@ -655,6 +655,7 @@ typedef struct {        /* RTK control/result type */
     int epoch;          /* epoch number */
     int intpres_nb;     // Time interpolation of residuals, number of previous base observations.
     obsd_t intpres_obsb[MAXOBS]; // Time interpolation of residuals, previous base observations.
+    void *solstat;      /* solution-status output context (statout_t*, bound by rtkinit; see rtkpos.c) */
 } rtk_t;
 
 typedef struct {        /* receiver raw data control type */

@@ -17,6 +17,7 @@ REPO="$(cd "$HERE/../.." && pwd)"
 BIN="$REPO/app/consapp/rnx2rtkp/gcc/rnx2rtkp"
 DATA="$REPO/test/data"
 CONF="$REPO/app/consapp/rnx2rtkp/test"
+SCONF="$HERE/conf"
 CASES="$HERE/cases.txt"
 GOLDEN="$HERE/golden"
 WORK="$HERE/work"
@@ -30,22 +31,34 @@ build() {
     make -C "$REPO/app/consapp/rnx2rtkp/gcc" -j"$(nproc)" LDLIBS=-lm
 }
 
-# Expand @D@/@C@ placeholders in a case's arg string.
-expand() { echo "$1" | sed -e "s#@D@#$DATA#g" -e "s#@C@#$CONF#g"; }
+# Expand @D@/@C@/@SC@ placeholders in a case's arg string.
+#   @D@  = test/data   @C@ = upstream conf dir   @SC@ = this harness's conf/
+expand() { echo "$1" | sed -e "s#@D@#$DATA#g" -e "s#@C@#$CONF#g" -e "s#@SC@#$SCONF#g"; }
 
 # Iterate cases, calling handle_case id pmode label rawfile.
+# A case may use `-o @OUT@` to write its solution to a file (needed for cases
+# that also emit a sibling <out>.stat); otherwise the solution is captured from
+# stdout. Any <out>.stat produced is treated as an extra golden artifact.
 each_case() {
     local handler="$1"
     while IFS='|' read -r id pmode label args; do
         case "$id" in ''|\#*) continue ;; esac
         id="$(echo "$id" | tr -d '[:space:]')"
         local argline; argline="$(expand "$args")"
-        local raw="$WORK/$id.raw"
+        local raw
         # Run inside work/ so any side files the binary writes to cwd (e.g.
         # <out>_events.pos) land in the git-ignored scratch dir, not the source tree.
-        # shellcheck disable=SC2086
-        ( cd "$WORK" && "$BIN" $argline >"$id.raw" 2>"$id.stderr" )
-        echo "$?" >"$WORK/$id.rc"
+        if [[ "$argline" == *@OUT@* ]]; then
+            raw="$WORK/$id.pos"; argline="${argline//@OUT@/$raw}"
+            # shellcheck disable=SC2086
+            ( cd "$WORK" && "$BIN" $argline >"$id.stdout" 2>"$id.stderr" )
+            echo "$?" >"$WORK/$id.rc"
+        else
+            raw="$WORK/$id.raw"
+            # shellcheck disable=SC2086
+            ( cd "$WORK" && "$BIN" $argline >"$id.raw" 2>"$id.stderr" )
+            echo "$?" >"$WORK/$id.rc"
+        fi
         "$handler" "$id" "$pmode" "$label" "$raw"
     done < "$CASES"
 }
@@ -54,7 +67,8 @@ cap_one() {
     local id="$1" raw="$4"
     python3 "$CMP" normalize "$raw" > "$GOLDEN/$id.pos"
     cp "$WORK/$id.rc" "$GOLDEN/$id.rc"
-    echo "  captured $id ($3)"
+    if [ -f "$raw.stat" ]; then python3 "$CMP" normalize "$raw.stat" > "$GOLDEN/$id.stat"; fi
+    echo "  captured $id ($3)$([ -f "$raw.stat" ] && echo ' +stat')"
 }
 
 ver_one() {
@@ -67,6 +81,17 @@ ver_one() {
     fi
     if [ $rc -ne 0 ]; then
         echo "  FAIL $id ($label):"; echo "$out" | sed 's/^/      /'; FAILS=$((FAILS+1)); return
+    fi
+    # If a golden .stat exists for this case, the current run must reproduce it.
+    if [ -f "$GOLDEN/$id.stat" ]; then
+        if [ ! -f "$raw.stat" ]; then
+            echo "  FAIL $id ($label): expected .stat output not produced"; FAILS=$((FAILS+1)); return
+        fi
+        local sout; sout="$(python3 "$CMP" compare "$GOLDEN/$id.stat" "$raw.stat" "$ABSTOL" "$RELTOL" 2>&1)"
+        if [ $? -ne 0 ]; then
+            echo "  FAIL $id ($label) [.stat]:"; echo "$sout" | sed 's/^/      /'; FAILS=$((FAILS+1)); return
+        fi
+        echo "  PASS $id ($label) +stat"; return
     fi
     echo "  PASS $id ($label)"
 }
