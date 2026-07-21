@@ -2132,7 +2132,7 @@ static void save_msm_obs(rtcm_t *rtcm, int sys, msm_h_t *h, const double *r,
             fcn=-8; /* no glonass fcn info */
             if (ex&&ex[i]<=13) {
                 fcn=ex[i]-7;
-                if (!rtcm->nav.glo_fcn[prn-1]) {
+                if (MINPRNGLO<=prn&&prn<=MAXPRNGLO&&!rtcm->nav.glo_fcn[prn-1]) {
                     rtcm->nav.glo_fcn[prn-1]=fcn+8; /* fcn+8 */
                 }
             }
