@@ -1,0 +1,35 @@
+# Characterization corpus for rnx2rtkp
+# Format:  id | pmode | label | args
+#   @D@ -> <repo>/test/data      @C@ -> <repo>/app/consapp/rnx2rtkp/test
+#   solution is captured from stdout; -o / -x / shell redirection removed.
+# Derived from app/consapp/CMakeLists.txt rnx2rtkp_test1..25 (upstream's own cases).
+# INPUT11 = rover obs + nav ; INPUT12 = base obs ; -r ... = base ecef.
+#
+# NOTE: available test/data cannot exercise MOVEB / FIXED / PPP_* (no matching
+# precise-product + obs pairing, and no upstream case uses those modes here).
+# See README.md "Coverage gaps".
+01|KINEMA|default-kinema|@D@/rinex/07590920.05o @D@/rinex/30400920.05n
+02|KINEMA|kinema-ecef|-t -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+03|DGPS|dgps|-t -p 1 -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+04|STATIC|static|-t -p 3 -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+05|KINEMA|kinema-elmask15|-t -m 15 -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+06|KINEMA|kinema-freq-l1|-t -f 1 -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+07|KINEMA|kinema-arthres5|-t -v 5 -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+08|KINEMA|kinema-instant-ar|-t -i -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+09|SINGLE|single|-t -p 0 -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+10|SINGLE|single-dup|-t -p 0 -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+11|SINGLE|single-nmea|-t -p 0 -n -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+12|SINGLE|single-degf|-t -p 0 -g -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+13|SINGLE|single-dup2|-t -p 0 -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+14|SINGLE|single-utc|-t -p 0 -u -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+15|SINGLE|single-timeu9|-t -p 0 -d 9 -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+16|SINGLE|single-sep-comma|-t -p 0 -s , -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+17|KINEMA|kinema-backward|-t -b -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+18|KINEMA|kinema-combined|-t -c -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+19|KINEMA|kinema-fixhold|-t -h -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+20|STATIC_START|staticstart-enu|-t -p 4 -a -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+21|KINEMA|default-noopts|@D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+22|STATIC|conf-opts1-static|-k @C@/opts1.conf @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+23|KINEMA|conf-opts2-kinema|-k @C@/opts2.conf @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+24|KINEMA|conf-opts3-kinema-y2|-k @C@/opts3.conf -y 2 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
+25|STATIC|conf-opts4-static-y2|-k @C@/opts4.conf -y 2 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o

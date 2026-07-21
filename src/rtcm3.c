@@ -528,6 +528,7 @@ static int decode_type1007(rtcm_t *rtcm)
     if (!test_staid(rtcm,staid)) return -1;
     
     sprintf(rtcm->sta.name,"%04d",staid);
+    if (n>=(int)sizeof(des)) n=(int)sizeof(des)-1;
     strncpy(rtcm->sta.antdes,des,n); rtcm->sta.antdes[n]='\0';
     rtcm->sta.antsetup=setup;
     rtcm->sta.antsno[0]='\0';
@@ -565,8 +566,10 @@ static int decode_type1008(rtcm_t *rtcm)
     if (!test_staid(rtcm,staid)) return -1;
     
     sprintf(rtcm->sta.name,"%04d",staid);
+    if (n>=(int)sizeof(des)) n=(int)sizeof(des)-1;
     strncpy(rtcm->sta.antdes,des,n); rtcm->sta.antdes[n]='\0';
     rtcm->sta.antsetup=setup;
+    if (m>=(int)sizeof(sno)) m=(int)sizeof(sno)-1;
     strncpy(rtcm->sta.antsno,sno,m); rtcm->sta.antsno[m]='\0';
     return 5;
 }
