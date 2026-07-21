@@ -1314,7 +1314,7 @@ extern int init_raw(raw_t *raw, int format)
     raw->sbsmsg=sbsmsg0;
     raw->msgtype[0]='\0';
     for (i=0;i<MAXSAT;i++) {
-        for (j=0;j<380;j++) raw->subfrm[i][j]=0;
+        for (j=0;j<(int)sizeof(raw->subfrm[i]);j++) raw->subfrm[i][j]=0;
         for (j=0;j<NFREQ+NEXOBS;j++) {
             raw->tobs [i][j]=time0;
             raw->lockt[i][j]=0.0;
