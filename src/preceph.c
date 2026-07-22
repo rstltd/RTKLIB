@@ -446,6 +446,7 @@ extern double code2bias(const nav_t *nav, int sys, int sat, int code, int mode) 
     frq_ix=code2idx(sys,code);
     if (frq_ix>=0&&sat<=MAXSAT) {
         code_ix = code_bias_ix[sys_ix][code];
+        if (code_ix<0) return 0.0;  /* no bias-table column (e.g. QZSS/NavIC) -> avoid negative-index read */
         bias=nav->cbias[sat-1][frq_ix][code_ix];  // absolute bias
         if (mode==0)
             bias-=nav->cbias[sat-1][frq_ix][0];  // difference with reference

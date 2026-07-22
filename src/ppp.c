@@ -915,6 +915,11 @@ static int model_iono(gtime_t time, const double *pos, const double *azel,
         *var=SQR(*dion*ERR_BRDCI);
         return 1;
     }
+    if (opt->ionoopt==IONOOPT_QZS) {
+        *dion=ionmodel(time,nav->ion_qzs,pos,azel);
+        *var=SQR(*dion*ERR_BRDCI);
+        return 1;
+    }
     if (opt->ionoopt==IONOOPT_EST) {
         /* Estimated delay is a vertical delay, apply the mapping function. */
         *dion=x[II(sat,opt)]*ionmapf(pos,azel);
