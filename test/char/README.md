@@ -54,7 +54,7 @@ confirms this.
 ## Coverage gaps (fail-loud)
 
 `cases.txt` exercises **SINGLE, DGPS, KINEMA, STATIC, STATIC_START** and, via
-cases 28-30, **PPP_KINEMA / PPP_STATIC**. The coverage table printed by every
+cases 28-33, **PPP_KINEMA / PPP_STATIC**. The coverage table printed by every
 run states which of the 10 PMODEs are covered.
 
 The PPP cases run PPP mode with **broadcast** ephemeris (there is no obs file in
@@ -65,6 +65,19 @@ filter) and pin its Q=6 output — closing the "`pppos()` has zero
 characterization coverage" gap — but do **not** exercise the precise-orbit/clock
 (`preceph`) or SSR-correction paths. Fully covering those still needs a matched
 obs + precise-product dataset.
+
+Cases 28-30 use the default `ionoopt`; cases 31-33 add the **uncombined**
+(`pos1-ionoopt=est-stec`) measurement model via self-contained `conf/` files,
+deliberately fencing the exact `ppp.c` seams a modernization will touch first:
+`model_iono()` EST branch + `udiono_ppp()` per-satellite slant-iono states
+(31/32) and `udtrop_ppp()` gradient + `model_trop()` states (33). These pin the
+*float* est-stec behaviour so a PPP-RTK atmosphere-ingestion change can be
+diffed against it. **Not yet fenced:** the file phase-OSB loader (`readbiaf`
+skips phase) and the `ppp_ar` fixing path — both need a Bias-SINEX + matched
+precise dataset that `test/data` does not contain. That dataset is the
+prerequisite for characterizing the first planned implementation target
+(file-based PPP-AR); until it exists those paths must be guarded by targeted
+unit tests (à la the RTCM3/RINEX sentinel checks), not this end-to-end net.
 
 Still uncovered: **MOVEB, FIXED, PPP_FIXED** (the last yields no solution rows
 with the stub `ppp_ar` and no precise products). Add those before relying on the

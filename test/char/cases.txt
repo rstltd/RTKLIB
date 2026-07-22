@@ -20,6 +20,14 @@
 # SSR-correction paths, which still need a matched precise dataset. ppp-fixed
 # (-p 9) is omitted: with the stub ppp_ar and no precise products it yields no
 # solution rows. MOVEB/FIXED remain uncovered. See README.md "Coverage gaps".
+#
+# PPP est-stec note (cases 31-33): cases 28-30 run the default ionoopt; cases 31-33
+# add the UNCOMBINED (pos1-ionoopt=est-stec) branch via self-contained conf/ files,
+# fencing the exact ppp.c seams a PPP-RTK atmosphere-ingestion rebuild will touch:
+# model_iono() EST branch + udiono_ppp() per-satellite slant-iono states (31/32),
+# and udtrop_ppp() gradient + model_trop() states (33, est-ztdgrad). Still broadcast
+# ephemeris / float PPP (Q=6); the phase-OSB loader and ppp_ar paths remain unfenced
+# because no Bias-SINEX / precise dataset exists in test/data (see README "Coverage gaps").
 01|KINEMA|default-kinema|@D@/rinex/07590920.05o @D@/rinex/30400920.05n
 02|KINEMA|kinema-ecef|-t -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
 03|DGPS|dgps|-t -p 1 -e -r -3978241.958 3382840.234 3649900.853 @D@/rinex/07590920.05o @D@/rinex/30400920.05n @D@/rinex/30400920.05o
@@ -50,3 +58,6 @@
 28|PPP_STATIC|ppp-static-brdc|-t -p 8 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
 29|PPP_KINEMA|ppp-kinematic-brdc|-t -p 7 @D@/rinex/07590920.05o @D@/rinex/30400920.05n
 30|PPP_STATIC|ppp-static-brdc-ecef|-t -p 8 -e @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+31|PPP_STATIC|ppp-eststec-static|-t -k @SC@/ppp_eststec_static.conf @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+32|PPP_KINEMA|ppp-eststec-kinema|-t -k @SC@/ppp_eststec_kinema.conf @D@/rinex/07590920.05o @D@/rinex/30400920.05n
+33|PPP_STATIC|ppp-eststec-ztdgrad|-t -k @SC@/ppp_eststec_ztdgrad.conf @D@/rinex/07590920.05o @D@/rinex/30400920.05n
