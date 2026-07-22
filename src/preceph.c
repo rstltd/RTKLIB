@@ -452,8 +452,28 @@ extern double code2bias(const nav_t *nav, int sys, int sat, int code, int mode) 
     }
     return bias;
 }
+/* lookup phase bias from table (file OSB) ------------------------------------
+*       mirrors code2bias(); returns 0 if not found
+*       mode:  0=difference with reference code
+*              1=OSB (absolute phase bias)
+* ----------------------------------------------------------------------------*/
+extern double phase2bias(const nav_t *nav, int sys, int sat, int code, int mode) {
+    int sys_ix,frq_ix,code_ix;
+    double bias=0;
+
+    sys_ix=sys2ix(sys);
+    frq_ix=code2idx(sys,code);
+    if (frq_ix>=0&&sat<=MAXSAT) {
+        code_ix=code_bias_ix[sys_ix][code];
+        if (code_ix<0) return 0.0;  /* guard the negative-index class (audit item 14) */
+        bias=nav->pbias[sat-1][frq_ix][code_ix];  // absolute bias
+        if (mode==0)
+            bias-=nav->pbias[sat-1][frq_ix][0];  // difference with reference
+    }
+    return bias;
+}
 /* read DCB parameters from BIA or BSX file ------------------------------------
-*    - supports satellite code biases only
+*    - supports satellite code biases and file phase-OSB (L... records)
 *-----------------------------------------------------------------------------*/
 static int readbiaf(const char *file, nav_t *nav)
 {
@@ -470,7 +490,7 @@ static int readbiaf(const char *file, nav_t *nav)
     }
     while (fgets(buff,sizeof(buff),fp)) {
         if (sscanf(buff,"%4s %5s %4s %4s %4s",bias,svn,prn,obs1,obs2)<5) continue;
-        if (obs1[0]!='C') continue;  /* skip phase biases for now */
+        if (obs1[0]!='C'&&obs1[0]!='L') continue;  /* keep code (C) and phase (L) OSBs */
         if ((cbias=str2num(buff,70,21))==0.0) continue;
         sat=satid2no(prn);
         sys=satsys(sat,NULL);
@@ -479,10 +499,13 @@ static int readbiaf(const char *file, nav_t *nav)
         if ((frq_ix=code2idx(sys,code1))<0) continue;
         if ((bias_ix1=code_bias_ix[sys_ix][code1])<0) continue;
         if (strcmp(bias,"OSB")==0) {
-            nav->cbias[sat-1][frq_ix][bias_ix1]=cbias*1E-9*CLIGHT; /* ns -> m */
+            if (obs1[0]=='L')
+                nav->pbias[sat-1][frq_ix][bias_ix1]=cbias*1E-9*CLIGHT; /* ns -> m */
+            else
+                nav->cbias[sat-1][frq_ix][bias_ix1]=cbias*1E-9*CLIGHT; /* ns -> m */
         }
-        else if (strcmp(bias,"DSB")==0) {
-            /* differential signal bias */
+        else if (strcmp(bias,"DSB")==0&&obs1[0]=='C') {
+            /* differential signal bias (code only) */
             if (obs1[1]!=obs2[1]) continue; /* skip biases between freqs for now */
             if (!(code2=obs2code(&obs2[1]))) continue; /* skip if code not valid */
             if ((bias_ix2=code_bias_ix[sys_ix][code2])<0) continue;
@@ -519,6 +542,7 @@ extern int readdcb(const char *file, nav_t *nav, const sta_t *sta)
 
     for (i=0;i<MAXSAT;i++) for (j=0;j<NFREQ;j++) for (k=0;k<MAX_CODE_BIASES;k++) {
         nav->cbias[i][j][k]=0.0;
+        nav->pbias[i][j][k]=0.0;
     }
     for (i=0;i<MAXEXFILE;i++) {
         if (!(efiles[i]=(char *)malloc(1024))) {

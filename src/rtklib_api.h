@@ -281,6 +281,7 @@ EXPORT void readsp3(const char *file, nav_t *nav, int opt);
 EXPORT int  readsap(const char *file, gtime_t time, nav_t *nav);
 EXPORT int  readdcb(const char *file, nav_t *nav, const sta_t *sta);
 EXPORT double code2bias(const nav_t *nav, int sys, int sat, int code, int mode);
+EXPORT double phase2bias(const nav_t *nav, int sys, int sat, int code, int mode);
 /*EXPORT int  readfcb(const char *file, nav_t *nav);*/
 EXPORT void alm2pos(gtime_t time, const alm_t *alm, double *rs, double *dts);
 
