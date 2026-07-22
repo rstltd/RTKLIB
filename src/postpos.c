@@ -430,6 +430,24 @@ static void corr_phase_bias_ssr(obsd_t *obs, int n, const nav_t *nav)
         obs[i].L[j]-=nav->ssr[obs[i].sat-1].pbias[code-1]*freq/CLIGHT;
     }
 }
+/* carrier-phase bias correction by file OSB (Bias-SINEX phase biases) --------*/
+static void corr_phase_bias_file(obsd_t *obs, int n, const nav_t *nav)
+{
+    double freq,pb;
+    uint8_t code;
+    int i,j,sys;
+
+    for (i=0;i<n;i++) {
+        sys=satsys(obs[i].sat,NULL);
+        for (j=0;j<NFREQ;j++) {
+            code=obs[i].code[j];
+            if (!code) continue;
+            if ((freq=sat2freq(obs[i].sat,code,nav))==0.0) continue;
+            if ((pb=phase2bias(nav,sys,obs[i].sat,code,1))==0.0) continue;
+            obs[i].L[j]-=pb*freq/CLIGHT; /* file phase OSB, m -> cyc */
+        }
+    }
+}
 /* process positioning -------------------------------------------------------*/
 static void procpos(FILE *fp, FILE *fptm, const prcopt_t *popt, const solopt_t *sopt,
                     rtk_t *rtk, int mode)
@@ -462,7 +480,8 @@ static void procpos(FILE *fp, FILE *fptm, const prcopt_t *popt, const solopt_t *
 
         /* carrier-phase bias correction */
         if (!strstr(popt->pppopt,"-ENA_FCB")) {
-            corr_phase_bias_ssr(obs_ptr,n,&navs);
+            corr_phase_bias_ssr(obs_ptr,n,&navs);   /* real-time SSR pbias */
+            corr_phase_bias_file(obs_ptr,n,&navs);  /* file Bias-SINEX phase OSB */
         }
         if (!rtkpos(rtk, obs_ptr,n,&navs)) {
             if (rtk->sol.eventime.time != 0) {
