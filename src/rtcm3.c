@@ -2139,7 +2139,7 @@ static void save_msm_obs(rtcm_t *rtcm, int sys, msm_h_t *h, const double *r,
             else if (sat && rtcm->nav.geph[prn-1].sat == sat) {
                 fcn=rtcm->nav.geph[prn-1].frq;
             }
-            else if (rtcm->nav.glo_fcn[prn-1]>0) {
+            else if (MINPRNGLO<=prn&&prn<=MAXPRNGLO&&rtcm->nav.glo_fcn[prn-1]>0) {
                 fcn=rtcm->nav.glo_fcn[prn-1]-8;
             }
         }

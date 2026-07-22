@@ -190,12 +190,14 @@ static bandcode_t rtklib_bandcode_map[CODE_COUNT] =
      {CODE_L5I, SYS_QZS, 3},     /* [CODE_QZS_L5I]  */
      {CODE_L5Q, SYS_QZS, 3},     /* [CODE_QZS_L5Q]  */
      {CODE_L5X, SYS_QZS, 3}};    /* [CODE_QZS_L5X]  */
-#define IS_GPS(c) (SYS_GPS == rtklib_bandcode_map[(c)].sys)
-#define IS_QZSS(c) (SYS_QZS == rtklib_bandcode_map[(c)].sys)
-#define IS_BDS(c) (SYS_CMP == rtklib_bandcode_map[(c)].sys)
-#define IS_GLO(c) (SYS_GLO == rtklib_bandcode_map[(c)].sys)
-#define IS_GAL(c) (SYS_GAL == rtklib_bandcode_map[(c)].sys)
-#define IS_SBAS(c) (SYS_SBS == rtklib_bandcode_map[(c)].sys)
+/* (unsigned)(c) < CODE_COUNT bounds the wire-derived code (0..255, or negative
+   from a signed source) before indexing the CODE_COUNT-entry table. */
+#define IS_GPS(c) ((unsigned)(c) < CODE_COUNT && SYS_GPS == rtklib_bandcode_map[(c)].sys)
+#define IS_QZSS(c) ((unsigned)(c) < CODE_COUNT && SYS_QZS == rtklib_bandcode_map[(c)].sys)
+#define IS_BDS(c) ((unsigned)(c) < CODE_COUNT && SYS_CMP == rtklib_bandcode_map[(c)].sys)
+#define IS_GLO(c) ((unsigned)(c) < CODE_COUNT && SYS_GLO == rtklib_bandcode_map[(c)].sys)
+#define IS_GAL(c) ((unsigned)(c) < CODE_COUNT && SYS_GAL == rtklib_bandcode_map[(c)].sys)
+#define IS_SBAS(c) ((unsigned)(c) < CODE_COUNT && SYS_SBS == rtklib_bandcode_map[(c)].sys)
 
 /* checksum lookup table -----------------------------------------------------*/
 static const uint32_t CRC_16CCIT_LookUp[256] = {
@@ -505,7 +507,7 @@ static int decode_msgobs(raw_t *raw) {
       if (aux_antenna(band_code)) continue;
     }
 
-    if ((CODE_INVALID != band_code) && (band_code < CODE_COUNT)) {
+    if ((band_code >= 0) && (band_code < CODE_COUNT)) {  /* band_code is int8_t: reject negative (wire byte >=128) before indexing */
       code = rtklib_bandcode_map[band_code].code;
       sys = rtklib_bandcode_map[band_code].sys;
       freq = rtklib_bandcode_map[band_code].freq;
