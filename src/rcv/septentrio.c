@@ -1328,6 +1328,10 @@ static int decode_meas3ranges(raw_t *raw) {
                                 int masterRefFreqIdx = meas3_sig2idx(navsys, sbf->meas3_refEpoch.signalIdx[navsys][svid][0], raw->opt, &codeSlave, sigTable);
                                 int slaveRefFreqIdx = meas3_sig2idx(navsys, sbf->meas3_refEpoch.signalIdx[navsys][svid][slaveCnt+1], raw->opt, &codeSlave, sigTable);
 
+                                /* the delta is decoded against the reference signal's obs; a -1 index
+                                   means the reference signal is unmapped and cannot be decoded -- skip
+                                   rather than read obsData[-1] out of bounds. */
+                                if (masterRefFreqIdx >= 0 && slaveRefFreqIdx >= 0) {
                                 raw->obuf.data[n].L[slaveFreqIndex] = (slaveReference->L[slaveRefFreqIdx]
                                                                       + (raw->obuf.data[n].L[masterFreqIndex] - masterReference->L[masterRefFreqIdx]) * freqSlave / freqMaster - 0.128 + dC * 0.001);
 
@@ -1339,8 +1343,13 @@ static int decode_meas3ranges(raw_t *raw) {
 
                                 raw->obuf.data[n].code[slaveFreqIndex] = codeSlave;
                                 raw->obuf.data[n].LLI[slaveFreqIndex] = slaveReference->LLI[slaveRefFreqIdx];
-                                raw->lockt[satNo-1][slaveFreqIndex] = sbf->meas3_refEpoch.lockt[navsys][svid][slaveCnt+1];
+                                /* lockt is indexed by frequency (NFREQ+NEXOBS); slaveCnt+1 is a signal
+                                   count, so only index it while it is a valid frequency slot (the correct
+                                   signal->frequency mapping is a separate, unverified change). */
+                                raw->lockt[satNo-1][slaveFreqIndex] = (slaveCnt+1 < NFREQ+NEXOBS) ?
+                                    sbf->meas3_refEpoch.lockt[navsys][svid][slaveCnt+1] : 0;
                                 sbf->meas3_freqAssignment[navsys][svid][slaveCnt+1] = slaveFreqIndex;
+                                }
                             }
 
                             idx += 3;
@@ -1457,16 +1466,23 @@ int decode_meas3Doppler(raw_t* raw)
 
         masterFreqIndex = sbf->meas3_freqAssignment[navsys][svid][0];
 
-        double freqMaster = code2freq(sys, raw->obuf.data[n].code[masterFreqIndex], raw->obuf.data[n].freq - 7);
-
-        raw->obuf.data[n].D[masterFreqIndex] = (float)(-(prRate + (int32_t)sbf->meas3_refEpoch.prRate[navsys][svid] * 64) * 0.001 / (CLIGHT/freqMaster));
+        /* masterFreqIndex is -1 when the reference master signal was unmapped;
+           guard the frequency-indexed obs accesses but keep meas3_DopplerPrRate
+           unconditional so the buffer offset stays in sync. */
+        double freqMaster = 0;
+        if (masterFreqIndex >= 0) {
+            freqMaster = code2freq(sys, raw->obuf.data[n].code[masterFreqIndex], raw->obuf.data[n].freq - 7);
+            raw->obuf.data[n].D[masterFreqIndex] = (float)(-(prRate + (int32_t)sbf->meas3_refEpoch.prRate[navsys][svid] * 64) * 0.001 / (CLIGHT/freqMaster));
+        }
         for (int i = 1; i<MEAS3_SIG_MAX; i++) {
             slaveFreqIndex = sbf->meas3_freqAssignment[navsys][svid][i];
             if (slaveFreqIndex < 0)
                 break;
             prRate = meas3_DopplerPrRate(raw, &offset);
+            if (masterFreqIndex >= 0) {
             double freqSlave = code2freq(sys, raw->obuf.data[n].code[slaveFreqIndex], raw->obuf.data[n].freq - 7);
             raw->obuf.data[n].D[slaveFreqIndex] = (float)((raw->obuf.data[n].D[masterFreqIndex] * (CLIGHT/freqMaster) * 1000 - prRate) * 0.001 / (CLIGHT/freqSlave));
+            }
         }
     }
 
@@ -1513,7 +1529,8 @@ int decode_meas3CN(raw_t* raw)
         masterFreqIndex = sbf->meas3_freqAssignment[navsys][svid][0];
 
         uint8_t mc = (U1(raw->buff + 16 + offset / 2) >> ((offset % 2) * 4)) & 0xf;
-        raw->obuf.data[n].SNR[masterFreqIndex] += mc * 0.0625 - 0.5;
+        if (masterFreqIndex >= 0)  /* -1 when reference master unmapped; keep offset++ unconditional */
+            raw->obuf.data[n].SNR[masterFreqIndex] += mc * 0.0625 - 0.5;
         offset++;
         for (int i = 1; i<MEAS3_SIG_MAX; i++) {
             slaveFreqIndex = sbf->meas3_freqAssignment[navsys][svid][i];
