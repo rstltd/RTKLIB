@@ -82,13 +82,29 @@ extern "C" {
 
 /* ABI version of librtklib, used as the ELF SONAME (see src/CMakeLists.txt).
  *
- * Bump this on ANY change to the layout of a structure that crosses the
- * library boundary -- prcopt_t, rtk_t, sol_t, nav_t, obsd_t and friends --
- * including appending a field, since that changes sizeof().  PATCH_LEVEL is
- * not a substitute: it does not reach the SONAME, so without this an
- * application compiled against an older layout would happily load a newer
- * library and read and write past the end of its own objects (plan.md 6.10
- * RC-2).
+ * Bump this whenever an already-linked executable would be unsafe against the
+ * new library.  Struct layout is only one of the ways that happens:
+ *
+ *   - a public struct changes layout (prcopt_t, rtk_t, sol_t, nav_t, obsd_t,
+ *     ssat_t ...), including merely appending a field, since callers allocate
+ *     these and sizeof() is part of the contract
+ *   - an exported function's signature changes: parameters added, removed,
+ *     reordered or retyped, or a different return type
+ *   - an exported symbol is removed, renamed, or becomes static
+ *   - the meaning of an argument or return value changes with its type
+ *     intact: units, sign, pointer ownership, error-code values
+ *   - a public macro callers compile into their own code changes value
+ *     (MAXSAT, NFREQ, ...)
+ *
+ * Adding a new exported function or a new #define does not need a bump.
+ * When in doubt, bump: an unnecessary bump costs a rebuild, a missed one
+ * costs memory corruption in the field.
+ *
+ * PATCH_LEVEL is not a substitute -- it never reaches the SONAME, so on its
+ * own it documents a break without preventing it (plan.md 6.10 RC-2).
+ *
+ * Full rationale, and what the SONAME does and does not protect against:
+ * docs/fgo/abi.md
  *
  * 1 : first versioned ABI.  prcopt_t gained the fgo_* fields and rtk_t gained
  *     rtk_t::fgo, so this is not layout-compatible with any earlier build.  */
