@@ -222,7 +222,31 @@ const prcopt_t prcopt_default={ /* defaults processing options */
     {0},{0},{0},                /* baseline,ru,rb */
     {"",""},                    /* anttype */
     {{0}},{{0}},{0},            /* antdel,pcv,exsats */
-    1,1                         /* maxaveep,initrst */
+    1,1,                        /* maxaveep,initrst */
+    /* Fields between initrst and the FGO block are intentionally left to the
+       implicit zero initialization they already had.  The FGO defaults must
+       be set HERE rather than in resetsysopts(): resetsysopts() merely
+       assigns prcopt_default, and callers such as rnx2rtkp copy
+       prcopt_default directly, so anything set only in resetsysopts() would
+       reach them as zero.  Designated initializers keep this independent of
+       the positional layout above (plan.md 6.4 M14).                        */
+    .fgo_solver    = FGO_SOLVER_EKF,     /* EKF unless a config asks otherwise */
+    .fgo_robust    = FGO_ROBUST_HUBER,
+    .fgo_ddcov     = FGO_DDCOV_BLOCK,
+    .fgo_elwmodel  = FGO_ELW_RTKLIB,
+    .fgo_maxiter   = FGO_DEF_MAXITER,
+    .fgo_tdcp      = 1,
+    .fgo_mpadapt   = 0,
+    .fgo_scaleest  = 1,
+    .fgo_jerk      = 0,
+    .fgo_stitch    = 0,
+    .fgo_async     = 0,
+    .fgo_timeout   = FGO_DEF_TIMEOUT,
+    .fgo_window    = FGO_DEF_WINDOW,
+    .fgo_kparam    = {FGO_DEF_HUBER_D,FGO_DEF_CAUCHY_C,FGO_DEF_TUKEY_C,0.0},
+    .fgo_innoscale = FGO_DEF_INNOSCALE,
+    .fgo_scaleclamp= {FGO_DEF_SCALEMIN,FGO_DEF_SCALEMAX},
+    .fgo_relinthres= FGO_DEF_RELINTHRES
 };
 const solopt_t solopt_default={ /* defaults solution output options */
     SOLF_LLH,TIMES_GPST,1,3,    /* posf,times,timef,timeu */

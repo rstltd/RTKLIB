@@ -63,6 +63,10 @@ static char snrmask_[NFREQ][1024];
 #define POSOPT  "0:llh,1:xyz,2:single,3:posfile,4:rinexhead,5:rtcm"
 #define TIDEOPT "1:solid+2:otl+4:spole"
 #define PHWOPT  "0:off,1:on,2:precise"
+#define SLVOPT  "0:ekf,1:fgo-batch,2:fgo-sliding,3:fgo-isam2"
+#define RBSTOPT "0:none,1:huber,2:cauchy,3:tukey,4:gnc"
+#define DDCVOPT "0:block,1:diag,2:latent"
+#define ELWOPT  "0:rtklib,1:exp,2:sitemap"
 
 EXPORT opt_t sysopts[]={
     {"pos1-posmode",    3,  (void *)&prcopt_.mode,       MODOPT },
@@ -186,6 +190,39 @@ EXPORT opt_t sysopts[]={
     {"misc-rnxopt1",    2,  (void *)prcopt_.rnxopt[0],   ""     },
     {"misc-rnxopt2",    2,  (void *)prcopt_.rnxopt[1],   ""     },
     {"misc-pppopt",     2,  (void *)prcopt_.pppopt,      ""     },
+
+    /* Factor Graph Optimization (plan.md 6.4 M13, Appendix B.1).
+       pos1-solver sits with the pos1- group because it selects the estimator,
+       an axis orthogonal to pos1-posmode; every fgo- entry below only takes
+       effect once it is set to something other than ekf.  A config file
+       written before these existed simply leaves them at the prcopt_default
+       values, and one written after is ignored by an older binary, because
+       searchopt() skips names it does not know -- so compatibility holds in
+       both directions (gate G3).                                            */
+    {"pos1-solver",     3,  (void *)&prcopt_.fgo_solver, SLVOPT },
+    {"fgo-window",      1,  (void *)&prcopt_.fgo_window, "s"    },
+    {"fgo-maxiter",     0,  (void *)&prcopt_.fgo_maxiter,""     },
+    {"fgo-robust",      3,  (void *)&prcopt_.fgo_robust, RBSTOPT},
+    {"fgo-huber-delta", 1,  (void *)&prcopt_.fgo_kparam[0],""   },
+    {"fgo-cauchy-c",    1,  (void *)&prcopt_.fgo_kparam[1],""   },
+    {"fgo-tukey-c",     1,  (void *)&prcopt_.fgo_kparam[2],""   },
+    {"fgo-ddcov",       3,  (void *)&prcopt_.fgo_ddcov,  DDCVOPT},
+    {"fgo-elwmodel",    3,  (void *)&prcopt_.fgo_elwmodel,ELWOPT},
+    {"fgo-mp-adaptive", 3,  (void *)&prcopt_.fgo_mpadapt,SWTOPT },
+    {"fgo-scale-est",   3,  (void *)&prcopt_.fgo_scaleest,SWTOPT},
+    {"fgo-scale-min",   1,  (void *)&prcopt_.fgo_scaleclamp[0],""},
+    {"fgo-scale-max",   1,  (void *)&prcopt_.fgo_scaleclamp[1],""},
+    {"fgo-maxinno-scale",1, (void *)&prcopt_.fgo_innoscale,""   },
+    {"fgo-tdcp",        3,  (void *)&prcopt_.fgo_tdcp,   SWTOPT },
+    {"fgo-jerkconst",   3,  (void *)&prcopt_.fgo_jerk,   SWTOPT },
+    {"fgo-arcstitch",   3,  (void *)&prcopt_.fgo_stitch, SWTOPT },
+    {"fgo-relin-thres", 1,  (void *)&prcopt_.fgo_relinthres,"m" },
+    {"fgo-timeout-ms",  0,  (void *)&prcopt_.fgo_timeout,""     },
+    {"fgo-async",       3,  (void *)&prcopt_.fgo_async,  SWTOPT },
+    {"fgo-siteconst",   2,  (void *)prcopt_.fgo_sitefile,""     },
+    {"fgo-insight-out", 2,  (void *)prcopt_.fgo_insightfile,""  },
+    {"fgo-mpmap",       2,  (void *)prcopt_.fgo_mpmapfile,""    },
+
     
     {"file-satantfile", 2,  (void *)&filopt_.satantp,    ""     },
     {"file-rcvantfile", 2,  (void *)&filopt_.rcvantp,    ""     },

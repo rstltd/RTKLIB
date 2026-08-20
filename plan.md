@@ -2210,10 +2210,18 @@ test/regression/run_regression.sh --update   # 重新產生基準（僅在變更
 
 ### 強制關卡 G3 — 設定檔向下相容
 
-以 `app/consapp/rtkrcv/` 現有範例設定檔（不含任何 `fgo-*` 條目）啟動，驗證：
+**已實作**：`test/options/check_options.sh`（測試本體 `test/options/opts_compat.c`）。
+
+以 `data/config/f9p_ppk.conf`（真實的 FGO 前設定檔，不含任何 `fgo-*` 條目）驗證：
+
 1. `loadopts()` 不報錯。
 2. `prcopt_.fgo_solver == FGO_SOLVER_EKF`。
-3. `saveopts()` 輸出的新設定檔可被再次讀入且語意不變。
+3. 全部 FGO 預設值與 Appendix B.1 相符。
+4. 明確設定 `fgo-*` 時確實生效。
+5. `saveopts()` 輸出的新設定檔可被再次讀入且語意不變。
+6. **未知選項名稱被忽略而非拒絕**——這是「新設定檔可被舊版程式讀取」的前提（向上相容）。
+
+**預設值必須寫在 `prcopt_default`（`rtkcmn.c`）而非 `resetsysopts()`**。原草案的 M14 只提到後者，但 `resetsysopts()` 僅執行 `prcopt_=prcopt_default;`，而 `rnx2rtkp` 等呼叫端是直接複製 `prcopt_default`——只寫在 `resetsysopts()` 的預設值對它們而言會是 0。已以負向測試確認：移除 `prcopt_default` 中的 `fgo_window`/`fgo_maxiter` 預設後，本關卡失敗（`window=0.0 maxiter=0`）。
 
 ### 強制關卡 G4 — 單元測試（新增至 `test/utest/`）
 

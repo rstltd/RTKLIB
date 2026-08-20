@@ -530,6 +530,34 @@ typedef struct {        /* processing options type */
     double odisp[2][2][11][3]; // Ocean tide loading parameters {rov,base}{amp,phase}
     int  freqopt;       /* disable L2-AR */
     char pppopt[256];   /* ppp option */
+    /* ---- Factor Graph Optimization extension (plan.md 6.6 M17) ------------
+     * Appended at the tail to keep the offset of every existing field
+     * unchanged.  This still alters sizeof(prcopt_t) and therefore breaks
+     * ABI for anything not rebuilt against this header (plan.md 6.10 RC-2),
+     * which is why PATCH_LEVEL is bumped in the same change.
+     * Defaults live in prcopt_default (rtkcmn.c); fgo_solver defaulting to
+     * FGO_SOLVER_EKF is what keeps every existing config file on the
+     * unchanged EKF path. */
+    int    fgo_solver;      /* solver (FGO_SOLVER_???) */
+    int    fgo_robust;      /* robust kernel (FGO_ROBUST_???) */
+    int    fgo_ddcov;       /* DD covariance mode (FGO_DDCOV_???) */
+    int    fgo_elwmodel;    /* elevation weighting model (FGO_ELW_???) */
+    int    fgo_maxiter;     /* max optimizer iterations */
+    int    fgo_tdcp;        /* enable TDCP factors (0:off,1:on) */
+    int    fgo_mpadapt;     /* enable CMC-adaptive weighting (0:off,1:on) */
+    int    fgo_scaleest;    /* enable MAD scale estimation (0:off,1:on) */
+    int    fgo_jerk;        /* enable jerk smoothing factor (0:off,1:on) */
+    int    fgo_stitch;      /* enable arc stitching (0:off,1:on) */
+    int    fgo_async;       /* run the optimizer off-thread (0:off,1:on) */
+    int    fgo_timeout;     /* per-epoch optimizer timeout (ms) */
+    double fgo_window;      /* sliding window length (s) */
+    double fgo_kparam[4];   /* kernel params {huber_d,cauchy_c,tukey_c,rsv} */
+    double fgo_innoscale;   /* maxinno relaxation factor */
+    double fgo_scaleclamp[2]; /* MAD scale clamp {min,max} */
+    double fgo_relinthres;  /* iSAM2 relinearization threshold (m) */
+    char   fgo_sitefile[MAXSTRPATH];    /* site constraint config file */
+    char   fgo_insightfile[MAXSTRPATH]; /* AI insight output path */
+    char   fgo_mpmapfile[MAXSTRPATH];   /* site multipath map file */
 } prcopt_t;
 
 typedef struct {        /* solution options type */
@@ -670,6 +698,10 @@ typedef struct {        /* RTK control/result type */
     int vtec_used;      /* indicates VTEC coeffs have been used to init ion states */
     obsd_t intpres_obsb[MAXOBS]; /* Time interpolation of residuals, previous base observations */
     void *solstat;      /* solution-status output context (statout_t*, bound by rtkinit; see rtkpos.c) */
+    void *fgo;          /* FGO solver context (fgo::Solver*), NULL until
+                           fgo_init() binds it; follows the solstat precedent
+                           of an opaque pointer owned by rtkinit/rtkfree
+                           (plan.md 6.6 M18) */
 } rtk_t;
 
 typedef struct {        /* receiver raw data control type */

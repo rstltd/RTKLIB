@@ -2485,6 +2485,8 @@ extern void rtkinit(rtk_t *rtk, const prcopt_t *opt)
     rtk->sol.thres=(float)opt->thresar[0];
     rtk->intpres_nb=0;
     rtk->solstat=&solstat_default;
+    rtk->fgo=NULL;   /* bound by fgo_init() when a solver other than EKF is
+                        selected; nothing allocates it yet */
 }
 /* free rtk control ------------------------------------------------------------
 * free memory for rtk control struct

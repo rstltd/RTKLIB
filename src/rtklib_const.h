@@ -329,6 +329,43 @@
 #define SOLF_STAT   4                   /* solution format: solution status */
 #define SOLF_GSIF   5                   /* solution format: GSI F1/F2 */
 
+/* Factor Graph Optimization extension (plan.md 6.7) -------------------------
+ * Solver selection is deliberately NOT a new PMODE_*: PMODE_* means
+ * "positioning mode" -- which observations are combined and how the station is
+ * assumed to move -- while the solver is an orthogonal axis.  Folding FGO into
+ * PMODE_* would multiply out into PMODE_FGO_STATIC, PMODE_FGO_KINEMA and so
+ * on, and would break the dozens of `opt->mode<=PMODE_DGPS` style comparisons
+ * spread across rtkpos.c, ppp.c and postpos.c (plan.md decision D4).         */
+#define FGO_SOLVER_EKF      0           /* solver: extended Kalman filter */
+#define FGO_SOLVER_BATCH    1           /* solver: batch factor graph */
+#define FGO_SOLVER_SLIDING  2           /* solver: sliding-window factor graph */
+#define FGO_SOLVER_ISAM2    3           /* solver: incremental (iSAM2) */
+
+#define FGO_ROBUST_NONE     0           /* robust kernel: none (L2) */
+#define FGO_ROBUST_HUBER    1           /* robust kernel: Huber */
+#define FGO_ROBUST_CAUCHY   2           /* robust kernel: Cauchy */
+#define FGO_ROBUST_TUKEY    3           /* robust kernel: Tukey */
+#define FGO_ROBUST_GNC      4           /* robust kernel: graduated non-convexity */
+
+#define FGO_DDCOV_BLOCK     0           /* DD covariance: full block */
+#define FGO_DDCOV_DIAG      1           /* DD covariance: diagonal approximation */
+#define FGO_DDCOV_LATENT    2           /* DD covariance: explicit reference error */
+
+#define FGO_ELW_RTKLIB      0           /* elevation weighting: as varerr() */
+#define FGO_ELW_EXP         1           /* elevation weighting: exponential */
+#define FGO_ELW_SITEMAP     2           /* elevation weighting: site multipath map */
+
+#define FGO_DEF_WINDOW      300.0       /* default sliding window (s) */
+#define FGO_DEF_MAXITER     30          /* default max optimizer iterations */
+#define FGO_DEF_HUBER_D     1.345       /* default Huber tuning constant */
+#define FGO_DEF_CAUCHY_C    2.3849      /* default Cauchy tuning constant */
+#define FGO_DEF_TUKEY_C     4.6851      /* default Tukey tuning constant */
+#define FGO_DEF_INNOSCALE   3.0         /* default maxinno relaxation factor */
+#define FGO_DEF_RELINTHRES  0.05        /* default iSAM2 relinearization (m) */
+#define FGO_DEF_TIMEOUT     2000        /* default per-epoch timeout (ms) */
+#define FGO_DEF_SCALEMIN    0.5         /* default MAD scale clamp, lower */
+#define FGO_DEF_SCALEMAX    5.0         /* default MAD scale clamp, upper */
+
 #define SOLQ_NONE   0                   /* solution status: no solution */
 #define SOLQ_FIX    1                   /* solution status: fix */
 #define SOLQ_FLOAT  2                   /* solution status: float */

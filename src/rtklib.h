@@ -78,7 +78,7 @@ extern "C" {
 
 #define VER_RTKLIB  "EX"             /* library version */
 
-#define PATCH_LEVEL "2.5.1"               /* patch level */
+#define PATCH_LEVEL "2.5.2"               /* patch level */
 
 /* --- domain fragments, assembled here in original order (umbrella header).
  *     Split from the historical single-file rtklib.h; behaviour-preserving. --- */
