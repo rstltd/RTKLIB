@@ -1,0 +1,48 @@
+From 0fc274e8db62b454ca7d1cd6107ae15d8fb5ef7a Mon Sep 17 00:00:00 2001
+From: andrew <andrew@rstltd.com>
+Date: Thu, 20 Aug 2026 09:47:45 +0800
+Subject: [PATCH 2/2] preceph: accept Bias-SINEX records without a std-dev
+ column
+
+readbiaf() requires each record to be at least 91 characters, which
+demands a trailing _STD_DEV___ field. Records that stop after
+__ESTIMATED_VALUE____ are shorter and get skipped, with the same silent
+outcome as a mis-parsed column: the file loads "successfully" and every
+bias reads back as 0.
+
+Nothing the parser indexes needs the line to be that long. The last
+field it touches is the value at column 70, and str2num() already clamps
+to the end of the line -- a short or absent value yields 0, which the
+existing
+
+    if ((cbias=str2num(buff,70,21))==0.0) continue;
+
+check skips. 71 is enough to guarantee the value field has begun.
+
+This keeps the blank-SVN handling from 5b59da3 intact; it only stops
+requiring an optional trailing column. Reproduced with an 88-character
+OSB record (C1C = 5 ns), which is skipped before this change and loads
+after it.
+
+Separable from the OBS2 column fix in the previous commit -- drop this
+one if you consider the std-dev field mandatory for this reader.
+---
+ src/preceph.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/preceph.c b/src/preceph.c
+index 11b262d9..af3dd95c 100644
+--- a/src/preceph.c
++++ b/src/preceph.c
+@@ -476,7 +476,7 @@ static int readbiaf(const char *file, nav_t *nav)
+         return 0;
+     }
+     while (fgets(buff,sizeof(buff),fp)) {
+-        if ((int)strlen(buff)<91) continue;
++        if ((int)strlen(buff)<71) continue;
+         strncpy(bias, buff+1,  3); bias[3] ='\0';
+         strncpy(prn,  buff+11, 3); prn[3]  ='\0';
+         strncpy(obs1, buff+25, 3); obs1[3] ='\0';
+-- 
+2.39.5
+

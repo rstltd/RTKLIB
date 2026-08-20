@@ -1,0 +1,58 @@
+From 457d90dc9009507ae824c4853025b310640de86b Mon Sep 17 00:00:00 2001
+From: andrew <andrew@rstltd.com>
+Date: Thu, 20 Aug 2026 09:47:35 +0800
+Subject: [PATCH 1/2] preceph: read OBS2 from column 30, fixing silently
+ dropped DSB records
+
+readbiaf() reads the OBS2 field of a Bias-SINEX record from column 29,
+but the SINEX_BIAS layout puts OBS2 at column 30 -- column 29 is the
+separator space:
+
+    *BIAS SVN_ PRN STATION__ OBS1 OBS2 BIAS_START____ ...
+    0     6    11  15        25   30
+
+So obs2 comes back shifted by one: " C1" instead of "C1W". obs2[1] is
+then always the leading C/L of the observation code rather than the band
+digit, so the same-frequency test in the DSB branch
+
+    if (obs1[1]!=obs2[1]) continue;
+
+compares a digit against a letter and can never match, for any code
+pair. The DSB branch is therefore unreachable in its entirety and every
+DSB record in the file is skipped.
+
+The failure is silent: readbiaf() still returns 1, readdcb() reports
+success, nothing appears in the trace, and every bias that should have
+come from a DSB record reads back as 0. OSB-only products are unaffected
+because obs2 is unused on that path, which is likely why this went
+unnoticed.
+
+The other three offsets in the function (1, 11, 25) are correct.
+
+Introduced in 5b59da3 when the sscanf whitespace parse was replaced with
+fixed-column strncpy. Moving to fixed columns is the right fix for the
+blank-SVN files that motivated it; only the OBS2 offset is short.
+
+Reproduced with a single-record GPS DSB file (C1C-C1W = 5 ns, 103
+characters so it clears the length guard): code2bias(C1C) returns 0
+before this change and 5e-9*CLIGHT = 1.498962290 m after.
+---
+ src/preceph.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/preceph.c b/src/preceph.c
+index 0777c9d2..11b262d9 100644
+--- a/src/preceph.c
++++ b/src/preceph.c
+@@ -480,7 +480,7 @@ static int readbiaf(const char *file, nav_t *nav)
+         strncpy(bias, buff+1,  3); bias[3] ='\0';
+         strncpy(prn,  buff+11, 3); prn[3]  ='\0';
+         strncpy(obs1, buff+25, 3); obs1[3] ='\0';
+-        strncpy(obs2, buff+29, 3); obs2[3] ='\0';
++        strncpy(obs2, buff+30, 3); obs2[3] ='\0';
+         if (obs1[0]!='C') continue;  /* skip phase biases for now */
+         if ((cbias=str2num(buff,70,21))==0.0) continue;
+         sat=satid2no(prn);
+-- 
+2.39.5
+
