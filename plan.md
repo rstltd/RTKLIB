@@ -8,31 +8,35 @@
 | **日期** | 2026-08-20 |
 | **狀態** | Draft — 待技術評審 |
 | **目標程式庫** | RTKLIB-EX (demo5 lineage, RTKLIB 2.4.3 b34 base)，`rstltd/RTKLIB` fork |
-| **程式碼基準** | branch `chore/sync-upstream-20260820` 的**工作樹**（HEAD `1b0a1a8f` **加上尚未提交的暫存變更**）。見下方「行號基準」說明 |
+| **程式碼基準** | branch `chore/sync-upstream-20260820` @ `512ed8ac`（已含上游 RTKLIB-EX 2.5.1 合併 `a8062992`）。見下方「行號基準」說明 |
 | **授權基線** | RTKLIB: BSD-2-Clause；GTSAM: BSD-3-Clause（相容，見 §12.4） |
 | **適用範圍** | GNSS Near Real-Time (NRT) 變形監測 — 橋梁、邊坡、建物沉陷、結構健康監測 |
 
 ### 行號基準（重要）
 
-本文件引用的所有 `檔案:行號` 皆取自 **`/rst/RTKLIB` 工作樹在撰寫當下的狀態**：branch `chore/sync-upstream-20260820`，HEAD 為 `1b0a1a8f`，**外加當時已暫存（staged）但尚未提交的變更**。
+本文件引用的所有 `檔案:行號` 皆已對照 branch `chore/sync-upstream-20260820` 的 commit **`512ed8ac`**（本文件加入前的分支頂端）逐項驗證。該分支已包含 `a8062992`「Merge upstream rtklibexplorer/RTKLIB main (2.5.1) into rstltd main」。
 
-這一點必須明確，因為暫存變更是實質性的，而非僅是格式調整。已確認的差異：
+已驗證正確的檔案（行號可直接使用）：
 
-| 檔案 | 已提交 `1b0a1a8f` | 本文件引用的工作樹 | 差異性質 |
-|---|---|---|---|
-| `src/rtkpos.c` | 2,460 行 | 2,549 行 | **實質**。例如 `ddres()` 的「最小變異數參考衛星選擇」（`refvar`/`minvar` 邏輯）**只存在於工作樹**，已提交版本沒有 |
-| `src/ppp.c` | 1,280 行 | 1,318 行 | 實質 |
-| `src/rtkcmn.c` | 4,277 行 | 4,301 行 | 實質 |
-| `src/pntpos.c` | 715 行 | 715 行 | 相同 |
-| `src/rtklib_types.h` | 812 行 | 812 行 | 相同 |
-| `src/lambda.c` | 267 行 | 267 行 | 相同 |
+| 檔案 | 行數 | 抽查驗證 |
+|---|---|---|
+| `src/rtkpos.c` | 2,549 | `varerr`:406、`zdres`:1049、`ddcov`:1128、`constbl`:1145、`ddres`:1240、`manage_amb_LAMBDA`:1909、`relpos`:2068、`rtkpos`:2438 全部相符 |
+| `src/ppp.c` | 1,318 | `ppp_res`:974、`pppos`:1226 相符 |
+| `src/pntpos.c` | 715 | `varerr`:51、`rescode`:277 相符 |
+| `src/rtkcmn.c` | 4,301 | `filter`:1479 相符 |
+| `src/lambda.c` | 267 | `lambda`:180 相符 |
+| `src/rtklib_const.h` | 504 | `NFREQ`:83、`MAXSAT`:172、`MAXOBS`:177、`PMODE_*`:314、`SOLQ_*`:332 相符 |
+| `src/rtklib_api.h` | 554 | `chisqr[]`:8 相符 |
+| `src/options.c` | 578 | `sysopts[]`:67 相符 |
+| `src/rtklib_types.h` | 824 | 已於本版重新校正（見下） |
 
-**後果與行動項**：
+**已於本版修正的行號**：`src/rtklib_types.h` 因上游合併新增內容，`obsd_t`(:13) 之後的所有結構定義位移約 +12 行。本文件所有相關引用（`prcopt_t`、`rtk_t`、`ssat_t`、`sol_t`、`nav_t`、`solopt_t`、`ambc_t`、`snrmask_t`、`opt_t`、`void *solstat`）已全部更新為現行位置。
 
-1. 本文件描述的是**團隊目前實際在開發的程式碼狀態**，這是正確的規劃基準。
-2. 但 `src/rtkpos.c`、`src/ppp.c`、`src/rtkcmn.c` 的行號在暫存變更提交前後會位移。**閱讀時請以函式名稱為準，行號僅供快速定位。**
-3. §4.2.1「要點 1」與 §6.1 的 M3（凍結配對模式）建立在「`ddres()` 會動態選擇最小變異數參考衛星」這一行為上——**此行為來自暫存變更**。若該變更最終未被提交，M3 的凍結配對設計需重新評估（但仍需要凍結機制，因為即使是固定的參考衛星選擇規則，也可能因迭代中觀測有效性改變而切換）。
-4. 建議在 Phase 1 開始前先將這批暫存變更提交或決定去留，並以該 commit 重新校正本文件的行號。
+**使用提醒**：
+
+1. 行號僅供快速定位，**閱讀時請以函式／結構名稱為準**。上游持續合併會使行號再次位移，但函式名稱與職責是穩定的。
+2. §4.2.1「要點 1」與 §6.1 的 M3（凍結配對模式）所依據的行為——`ddres()` 會動態選擇最小變異數的參考衛星（`refvar`/`minvar` 邏輯）——**已確認存在於現行分支的已提交程式碼中**，M3 的設計前提成立。
+3. `src/rtklib.h` 現為 91 行的純門面檔（`:51-52` 為 `extern "C"` guard，`:85-87` 引入三個拆分檔），§2.1 描述的標頭拆分結構已完成。
 
 ---
 
@@ -88,7 +92,7 @@ Factor Graph Optimization（FGO）在同一份觀測資料上做**批次或滑�
 |---|---|---|
 | 頂層 CMake 已啟用 C++ | `CMakeLists.txt:12` — `project(rtklib LANGUAGES C CXX VERSION 2.4.3)` | 加入 `src/fgo/*.cpp` 不需改動 build system 的語言設定 |
 | `rtklib.h` 已具 C++ linkage guard | `rtklib.h:51-52` — `#ifdef __cplusplus` / `extern "C" {` | C++ TU 可直接 `#include "rtklib.h"`，無須額外 wrapper |
-| `rtk_t` 已有 opaque context 指標先例 | `rtklib_types.h:659` — `void *solstat;  /* statout_t*, bound by rtkinit */` | 加入 `void *fgo;` 遵循本 fork 既有慣例，ABI 影響可控、且審查者已熟悉此模式 |
+| `rtk_t` 已有 opaque context 指標先例 | `rtklib_types.h:672` — `void *solstat;  /* statout_t*, bound by rtkinit */` | 加入 `void *fgo;` 遵循本 fork 既有慣例，ABI 影響可控、且審查者已熟悉此模式 |
 
 **（三）Double-Difference 的相關性協方差與 robust kernel 存在根本張力，必須在設計期就決策。**
 
@@ -121,7 +125,7 @@ Factor Graph Optimization（FGO）在同一份觀測資料上做**批次或滑�
 
 # 2. Baseline Analysis — 現況程式庫盤點
 
-> 本章的所有敘述皆已對照實際原始碼驗證。行號基準見文件開頭說明（工作樹狀態，非純 commit `1b0a1a8f`）。
+> 本章的所有敘述皆已對照 `chore/sync-upstream-20260820` @ `512ed8ac` 的原始碼逐項驗證。行號基準見文件開頭說明。
 
 ## 2.1 Fork 血統與結構特徵
 
@@ -129,11 +133,11 @@ Factor Graph Optimization（FGO）在同一份觀測資料上做**批次或滑�
 
 | 特徵 | 說明 | 對 FGO 的影響 |
 |---|---|---|
-| 標頭檔已拆分 | `rtklib.h` 為門面，實際內容在 `rtklib_const.h`(500行) / `rtklib_types.h`(812行) / `rtklib_api.h`(552行)，後三者含 `#error "include rtklib.h, not ..."` 防護 | 新增型別/常數/API 需修改對應的拆分檔，而非 `rtklib.h` 本體 |
+| 標頭檔已拆分 | `rtklib.h` 為門面，實際內容在 `rtklib_const.h`(504行) / `rtklib_types.h`(824行) / `rtklib_api.h`(554行)，後三者含 `#error "include rtklib.h, not ..."` 防護 | 新增型別/常數/API 需修改對應的拆分檔，而非 `rtklib.h` 本體 |
 | `varerr()` 已擴充 SNR 與接收機標準差項 | `rtkpos.c:406-452`，使用 `opt->err[5]`(snr_max)、`err[6]`(snr)、`err[7]`(rcv_std) 與 `obs->Pstd/Lstd` | 誤差模型比 upstream 豐富，FGO 可直接繼承，不需自建 |
 | AR 邏輯大幅改寫 | `manage_amb_LAMBDA()` (`rtkpos.c:1909`)、`arfilter`、partial AR、`excsat` | 應完整重用，不重寫（§4.4） |
 | GLONASS IC bias 自動校正 | `GLO_ARMODE_AUTOCAL`，狀態 `IL(f,opt)` | FGO 狀態向量需鏡射此設計 |
-| `rtk_t` 已有 opaque context 欄位 | `rtklib_types.h:659` `void *solstat;` | 新增 `void *fgo;` 的先例已存在 |
+| `rtk_t` 已有 opaque context 欄位 | `rtklib_types.h:672` `void *solstat;` | 新增 `void *fgo;` 的先例已存在 |
 | 已有 PPP phase-OSB loader 與 est-stec 相關近期開發 | commits `d220b8a0`, `4b376f51`, `505d12cc` | 表示團隊已在 `ppp.c` 有活躍修改；FGO 對 `ppp.c` 的改動需與之協調 |
 
 **命名更正（重要）**：需求文件提及的 `resph()` 在本程式庫中**不存在**。PPP 的殘差函式實際名稱為 **`ppp_res()`**，位於 `src/ppp.c:974`，簽章為：
@@ -1475,7 +1479,7 @@ var = fact² · { eratio[0]² · [ err[1]² + err[2]²/sin(el)
 
 | 機制 | 位置 | 設定項 |
 |---|---|---|
-| SNR mask（依仰角的 SNR 門檻） | `pntpos.c:96` `snrmask()`；`snrmask_t` (`rtklib_types.h:452`) | `pos1-snrmask_r/_b/_L1/_L2/_L5/_L6` |
+| SNR mask（依仰角的 SNR 門檻） | `pntpos.c:96` `snrmask()`；`snrmask_t` (`rtklib_types.h:464`) | `pos1-snrmask_r/_b/_L1/_L2/_L5/_L6` |
 | SNR 加權項 | `varerr()` `err[5]`,`err[6]` | `stats-errsnrmax`, `stats-errsnr` |
 | 接收機回報標準差加權 | `varerr()` `err[7]` × `obs->Pstd/Lstd` | `stats-errrcvstd` |
 | 仰角遮罩 | `opt->elmin` | `pos1-elmask` |
@@ -1901,7 +1905,7 @@ EXPORT int rtk_set_fgo_solution(rtk_t *rtk, const double *x, const double *P,
 
 ### M13 — 新增 FGO 選項至 `sysopts[]` 【T3】
 
-在 `sysopts[]` 表（`options.c:69` 起）新增 FGO 區段。**關鍵設計決策 D4：不擴充 `PMODE_*`，而是新增獨立的 `pos1-solver`。**
+在 `sysopts[]` 表（`options.c:67` 起）新增 FGO 區段。**關鍵設計決策 D4：不擴充 `PMODE_*`，而是新增獨立的 `pos1-solver`。**
 
 理由：`PMODE_*`（`rtklib_const.h:314-323`）的語意是「定位模式」（single/dgps/kinematic/static/moving-base/fixed/ppp-*），描述的是**觀測組合與測站運動假設**。Solver 是**正交的維度**——「static + FGO」與「kinematic + FGO」都應合法。若把 FGO 塞進 `PMODE_*`，會造成組合爆炸（`PMODE_FGO_STATIC`、`PMODE_FGO_KINEMA`...），且破壞所有既有的 `opt->mode <= PMODE_DGPS`、`opt->mode >= PMODE_PPP_KINEMA` 之類的比較邏輯（這類比較在 `rtkpos.c`、`ppp.c`、`postpos.c` 中散布數十處）。**這是一個必須避免的設計錯誤。**
 
@@ -1975,7 +1979,7 @@ EXPORT double madscale(const double *v, int n);
 
 ### M17 — `prcopt_t` 新增 FGO 欄位
 
-**必須加在 struct 尾端**（`rtklib_types.h:520`，`char pppopt[256];` 之後），以最小化 ABI 影響：
+**必須加在 struct 尾端**（`rtklib_types.h:532`，`char pppopt[256];` 之後），以最小化 ABI 影響：
 
 ```c
 typedef struct {        /* processing options type */
@@ -2009,7 +2013,7 @@ typedef struct {        /* RTK control/result type */
 } rtk_t;
 ```
 
-**遵循本 fork 既有慣例**（`solstat` 欄位，`rtklib_types.h:659`）：opaque `void*`，由 `rtkinit()`/`rtkfree()` 週期管理，C 端不需知道其內部結構。
+**遵循本 fork 既有慣例**（`solstat` 欄位，`rtklib_types.h:672`）：opaque `void*`，由 `rtkinit()`/`rtkfree()` 週期管理，C 端不需知道其內部結構。
 
 ### M19 — `ddres_ctx_t` / `ddres_stat_t` / `fgo_dd_ctx_t` 型別定義
 
@@ -3467,13 +3471,13 @@ GnssInsarTieFactor（把 InSAR 錨定到 GNSS）：
 | **OQ-8** | Confidence score 的消費者是誰？告警系統會如何使用？ | 決定 §10.5 的校準目標與嚴謹度 | Phase 2 | 若用於自動告警，校準要求遠高於僅供人工參考 |
 | **OQ-9** | 資料保留政策為何？batch 再處理需要保留多久的原始觀測？ | 決定儲存架構與 batch FGO 的可行窗口 | Phase 2 | 建議至少保留 90 天原始 RINEX/RTCM |
 | **OQ-10** | Phase 4 的感測器優先序是否與 §11.4 的建議一致？ | 決定 Phase 4 的規劃 | Phase 3 結束前 | §11.4 的排序基於技術成熟度；業務優先序可能不同 |
-| **OQ-11** | branch `chore/sync-upstream-20260820` 上尚未提交的暫存變更（含 `ddres()` 的最小變異數參考衛星選擇）何時提交或決定去留？ | 本文件的行號基準與 §6.1 M3 的凍結配對設計皆建立在這些變更上（見文件開頭「行號基準」） | **Phase 1 開始前** | 先提交或明確捨棄，再以該 commit 重新校正本文件行號，並建立 Phase 1 的回歸基準 |
+| **OQ-11** | 上游 RTKLIB-EX 的合併節奏為何？下一次上游合併預計何時？ | 上游合併會位移本文件的行號，且可能改動 `zdres()`/`ddres()` 的內容，影響 §6.1 的重構方案 | Phase 1 開始前 | 建議在一次上游合併剛完成後才啟動 Phase 3 的 `ddres()` 重構，以取得最長的穩定窗口；並確認是否需長期維持與上游同步（見 OQ-6） |
 
 ---
 
 # Appendix A — 關鍵原始碼索引
 
-> 行號取自 branch `chore/sync-upstream-20260820` 的**工作樹**（HEAD `1b0a1a8f` + 暫存變更），詳見文件開頭的「行號基準」說明。`src/rtkpos.c`、`src/ppp.c`、`src/rtkcmn.c` 的行號與已提交狀態不同。**請以函式名稱為準。**
+> 行號取自 branch `chore/sync-upstream-20260820` @ `512ed8ac`，已逐項驗證（詳見文件開頭「行號基準」）。上游後續合併會使行號位移，**請以函式名稱為準**。
 
 ## A.1 解算入口與流程
 
@@ -3571,21 +3575,21 @@ GnssInsarTieFactor（把 InSAR 錨定到 GNSS）：
 | 項目 | 位置 |
 |---|---|
 | `obsd_t` | `src/rtklib_types.h:13` |
-| `nav_t` | `src/rtklib_types.h:276` |
-| `sol_t` | `src/rtklib_types.h:335` |
-| `prcopt_t` | `src/rtklib_types.h:457` |
-| `solopt_t` | `src/rtklib_types.h:523` |
-| `ssat_t` | `src/rtklib_types.h:605` |
-| `ambc_t` | `src/rtklib_types.h:630` |
-| `rtk_t` | `src/rtklib_types.h:639` |
-| `snrmask_t` | `src/rtklib_types.h:452` |
-| `opt_t` | `src/rtklib_types.h:445` |
+| `nav_t` | `src/rtklib_types.h:287` |
+| `sol_t` | `src/rtklib_types.h:347` |
+| `prcopt_t` | `src/rtklib_types.h:469` |
+| `solopt_t` | `src/rtklib_types.h:535` |
+| `ssat_t` | `src/rtklib_types.h:617` |
+| `ambc_t` | `src/rtklib_types.h:642` |
+| `rtk_t` | `src/rtklib_types.h:651` |
+| `snrmask_t` | `src/rtklib_types.h:464` |
+| `opt_t` | `src/rtklib_types.h:457` |
 | `PMODE_*` | `src/rtklib_const.h:314-323` |
 | `SOLQ_*` | `src/rtklib_const.h:332-339` |
 | `MAXSAT` / `MAXOBS` / `NFREQ` | `src/rtklib_const.h:172` / `:177` / `:83` |
 | `VAR_POS` / `VAR_VEL` / `VAR_ACC` | `src/rtkpos.c:66-69` |
 | `chisqr[]` | `src/rtklib_api.h:8` |
-| `sysopts[]` | `src/options.c:69`（宣告於 `rtklib_api.h:14`） |
+| `sysopts[]` | `src/options.c:67`（宣告於 `rtklib_api.h:14`） |
 
 ## A.10 建置系統
 
@@ -3596,7 +3600,7 @@ GnssInsarTieFactor（把 InSAR 錨定到 GNSS）：
 | `aux_source_directory(.)` | `src/CMakeLists.txt:26` | 只收集 `src/*.c`，不含子目錄 |
 | `add_library(rtklib SHARED ...)` | `src/CMakeLists.txt:38` | 共享函式庫，ABI 相關 |
 | `if (GCC)` | `src/CMakeLists.txt:10`, `:16` | **`GCC` 從未被 `set()`，條件恆為假** |
-| `extern "C"` guard | `src/rtklib.h:51-52`, `:88` | C++ 可直接引入 |
+| `extern "C"` guard | `src/rtklib.h:51-52`（`extern "C" {`）；`:85-87` 引入三個拆分檔 | C++ 可直接引入 |
 
 ---
 
