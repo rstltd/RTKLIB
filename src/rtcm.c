@@ -87,6 +87,7 @@ extern int init_rtcm(rtcm_t *rtcm)
     rtcm->dgps=NULL;
     for (i=0;i<MAXSAT;i++) {
         rtcm->ssr[i]=ssr0;
+        rtcm->ssr[i].iode= -1;
     }
     rtcm->msg[0]=rtcm->msgtype[0]=rtcm->opt[0]='\0';
     for (i=0;i<6;i++) rtcm->msmtype[i][0]='\0';
@@ -128,6 +129,7 @@ extern int init_rtcm(rtcm_t *rtcm)
       for (int i = 0; i < MAXPRNGLO; i++) rtcm->nav.geph[i] = geph0;
     }
     rtcm->nav.ng = rtcm->nav.ngmax = MAXPRNGLO;
+    for (int i = 0; i < 32; i++) rtcm->nav.glo_fcn[i] = 0;
 
     return 1;
 }

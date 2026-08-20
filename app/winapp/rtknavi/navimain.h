@@ -186,6 +186,10 @@ __published:
 	void __fastcall BtnShrink1Click(TObject *Sender);
 	void __fastcall BtnExpand2Click(TObject *Sender);
 	void __fastcall BtnShrink2Click(TObject *Sender);
+	void __fastcall BtnExpand3Click(TObject *Sender);
+	void __fastcall BtnShrink3Click(TObject *Sender);
+	void __fastcall BtnExpand4Click(TObject *Sender);
+	void __fastcall BtnShrink4Click(TObject *Sender);
 	void __fastcall BtnMarkClick(TObject *Sender);
 	void __fastcall Panel24Resize(TObject *Sender);
 	void __fastcall Panel25Resize(TObject *Sender);
@@ -250,7 +254,7 @@ public:
 	int MoniPort,OpenPort,AutoRun;
 	
 	int PSol,PSolS,PSolE,Nsat[2],SolCurrentStat;
-	int Sat[2][MAXSAT],Snr[2][MAXSAT][NFREQ],Vsat[2][MAXSAT];
+	int Sat[2][MAXSAT],Snr[2][MAXSAT][NFREQ],Vsat[2][MAXSAT][NFREQ];
 	double Az[2][MAXSAT],El[2][MAXSAT];
 	gtime_t *Time;
 	int *SolStat,*Nvsat;

@@ -67,7 +67,12 @@ OptDialog::OptDialog(QWidget *parent, int opts)
 
     ui->cBTideCorrection->setItemData(0, tr("Not apply earth tides correction"), Qt::ToolTipRole);
     ui->cBTideCorrection->setItemData(1, tr("Apply solid earth tides correction"), Qt::ToolTipRole);
-    ui->cBTideCorrection->setItemData(2, tr("Apply solid earth tides, OTL (ocean tide loading) and pole tide corrections"), Qt::ToolTipRole);
+    ui->cBTideCorrection->setItemData(2, tr("Apply OTL (ocean tide loading)"), Qt::ToolTipRole);
+    ui->cBTideCorrection->setItemData(3, tr("Apply solid earth tides and OTL (ocean tide loading)"), Qt::ToolTipRole);
+    ui->cBTideCorrection->setItemData(4, tr("Apply pole tide corrections"), Qt::ToolTipRole);
+    ui->cBTideCorrection->setItemData(5, tr("Apply solid earth tides and pole tide corrections"), Qt::ToolTipRole);
+    ui->cBTideCorrection->setItemData(6, tr("Apply OTL (ocean tide loading) and pole tide corrections"), Qt::ToolTipRole);
+    ui->cBTideCorrection->setItemData(7, tr("Apply solid earth tides, OTL (ocean tide loading) and pole tide corrections"), Qt::ToolTipRole);
 
     ui->cBIonosphereOption->setItemData(IONOOPT_OFF, tr("Not apply ionospheric correction"), Qt::ToolTipRole);
     ui->cBIonosphereOption->setItemData(IONOOPT_BRDC, tr("Apply broadcast ionospheric model"), Qt::ToolTipRole);
@@ -134,9 +139,9 @@ OptDialog::OptDialog(QWidget *parent, int opts)
     QString decSep = QRegularExpression::escape(QLocale().decimalPoint());
 
     regExDMSLat = QRegularExpression(QString("^\\s*(?:(?<deg1>[%0%1]?90)[°\\s]\\s*(?<min1>0{1,2})['\\s]\\s*(?<sec1>0{1,2}(?:[%2]0*)?)\"?\\s*)|"
-                                             "(?:(?<deg2>[%0%1]?(?:[1-8][0-9]|[0-9]))[°\\s]\\s*(?<min2>(?:[0-5][0-9]|[0-9]))['\\s]\\s*(?<sec2>(?:[0-5][0-9]|[0-9])(?:[%2][0-9]*)?)\"?)\\s*$").arg(posSign, negSign, decSep));
+                                             "(?:(?<deg2>[%0%1]?(?:[1-8][0-9]|[0-9]))[°\\s]\\s*(?<min2>(?:[0-5][0-9]|[0-9]))['\\s]\\s*(?<sec2>(?:[0-6][0-9]|[0-9])(?:[%2][0-9]*)?)\"?)\\s*$").arg(posSign, negSign, decSep));
     regExDMSLon = QRegularExpression(QString("^\\s*(?:(?<deg1>[%0%1]?180)[°\\s]\\s*(?<min1>0{1,2})['\\s]\\s*(?<sec1>0{1,2}(?:[%2]0*)?)\"?\\s*)|"
-                                             "(?:(?<deg2>[%0%1]?(?:1[0-7][0-9]|[0-9][0-9]|[0-9]))[°\\s]\\s*(?<min2>(?:[0-5][0-9]|[0-9]))['\\s]\\s*(?<sec2>(?:[0-5][0-9]|[0-9])(?:[%2][0-9]*)?)\"?)\\s*$").arg(posSign, negSign, decSep));
+                                             "(?:(?<deg2>[%0%1]?(?:1[0-7][0-9]|[0-9][0-9]|[0-9]))[°\\s]\\s*(?<min2>(?:[0-5][0-9]|[0-9]))['\\s]\\s*(?<sec2>(?:[0-6][0-9]|[0-9])(?:[%2][0-9]*)?)\"?)\\s*$").arg(posSign, negSign, decSep));
 
 
     processingOptions = prcopt_default;
@@ -705,8 +710,7 @@ void OptDialog::updateOptions()
     processingOptions.ionoopt = ui->cBIonosphereOption->currentIndex();
     processingOptions.tropopt = ui->cBTroposphereOption->currentIndex();
     processingOptions.dynamics = ui->cBDynamicModel->currentIndex();
-    processingOptions.tidecorr = ui->cBTideCorrection->currentIndex();
-    if (processingOptions.tidecorr > 1) processingOptions.tidecorr = 7;
+    processingOptions.tidecorr = ui->cBTideCorrection->currentIndex() & 7;
     processingOptions.niter = ui->sBNumIteration->value();
     // codesmooth
     processingOptions.intpref = ui->cBIntputReferenceObservation->currentIndex();
@@ -933,7 +937,7 @@ void OptDialog::updateUi(const prcopt_t &prcopt, const solopt_t &solopt, const f
     ui->cBIonosphereOption->setCurrentIndex(prcopt.ionoopt);
     ui->cBTroposphereOption->setCurrentIndex(prcopt.tropopt);
     ui->cBDynamicModel->setCurrentIndex(prcopt.dynamics);
-    ui->cBTideCorrection->setCurrentIndex(prcopt.tidecorr > 1 ? 2 : prcopt.tidecorr);
+    ui->cBTideCorrection->setCurrentIndex(prcopt.tidecorr & 7);
     ui->sBNumIteration->setValue(prcopt.niter);
     //prcopt.codesmooth
     if (options == PostOptions) {
@@ -1132,8 +1136,7 @@ void OptDialog::save(const QString &file)
     procOpts.ionoopt = ui->cBIonosphereOption->currentIndex();
     procOpts.tropopt = ui->cBTroposphereOption->currentIndex();
     procOpts.dynamics = ui->cBDynamicModel->currentIndex();
-    procOpts.tidecorr = ui->cBTideCorrection->currentIndex();
-    if (procOpts.tidecorr > 1) procOpts.tidecorr = 7;
+    procOpts.tidecorr = ui->cBTideCorrection->currentIndex() & 7;
     procOpts.niter = ui->sBNumIteration->value();
     // procOpts.codesmooth
     procOpts.intpref = ui->cBIntputReferenceObservation->currentIndex();
@@ -1312,7 +1315,7 @@ void OptDialog::saveOptions(QSettings &settings)
     settings.setValue("prcopt/ionoopt", ui->cBIonosphereOption->currentIndex());
     settings.setValue("prcopt/tropopt", ui->cBTroposphereOption->currentIndex());
     settings.setValue("prcopt/dynamics", ui->cBDynamicModel->currentIndex());
-    settings.setValue("prcopt/tidecorr", ui->cBTideCorrection->currentIndex());
+    settings.setValue("prcopt/tidecorr", ui->cBTideCorrection->currentIndex() & 7);
     settings.setValue("prcopt/niter", ui->sBNumIteration->value());
     // settings.setValue("prcopt/codesmooth", processingOptions.codesmooth);
     settings.setValue("prcopt/intpref", ui->cBIntputReferenceObservation->currentIndex());
@@ -1481,7 +1484,7 @@ void OptDialog::loadOptions(QSettings &settings)
     ui->cBPositionMode->setCurrentIndex(settings.value("prcopt/mode", 0).toInt());
     ui->cBSolution->setCurrentIndex(settings.value("prcopt/soltype", 0).toInt());
     ui->cBFrequencies->setCurrentIndex(settings.value("prcopt/nf", 2).toInt() > NFREQ - 1 ? NFREQ - 1 : settings.value("prcopt/nf", 2).toInt() - 1);
-    int navsys = settings.value("prcopt/navsys", SYS_GPS).toInt();
+    int navsys = settings.value("prcopt/navsys", SYS_GPS | SYS_GLO | SYS_GAL | SYS_CMP).toInt();
     ui->cBNavSys1->setChecked(navsys & SYS_GPS);
     ui->cBNavSys2->setChecked(navsys & SYS_GLO);
     ui->cBNavSys3->setChecked(navsys & SYS_GAL);
@@ -1511,7 +1514,7 @@ void OptDialog::loadOptions(QSettings &settings)
     ui->cBIonosphereOption->setCurrentIndex(settings.value("prcopt/ionoopt", IONOOPT_BRDC).toInt());
     ui->cBTroposphereOption->setCurrentIndex(settings.value("prcopt/tropopt", TROPOPT_SAAS).toInt());
     ui->cBDynamicModel->setCurrentIndex(settings.value("prcopt/dynamics", 0).toInt());
-    ui->cBTideCorrection->setCurrentIndex(settings.value("prcopt/tidecorr", 0).toInt());
+    ui->cBTideCorrection->setCurrentIndex(settings.value("prcopt/tidecorr", 0).toInt() & 7);
     ui->sBNumIteration->setValue(settings.value("prcopt/niter", 1).toInt());
     // processingOptions.codesmooth = settings.value("prcopt/codesmooth", 0).toInt();
     if (options == PostOptions) {
@@ -1533,9 +1536,9 @@ void OptDialog::loadOptions(QSettings &settings)
     ui->sBMeasurementError3->setValue(settings.value("prcopt/err2", 0.003).toDouble());
     ui->sBMeasurementError4->setValue(settings.value("prcopt/err3", 0.0).toDouble());
     ui->sBMeasurementError5->setValue(settings.value("prcopt/err4", 1.0).toDouble());
-    ui->sBMeasurementErrorSNR_Max->setValue(settings.value("prcopt/err5", 1.0).toDouble());
-    ui->sBMeasurementErrorSNR->setValue(settings.value("prcopt/err6", 1.0).toDouble());
-    ui->sBMeasurementErrorReceiver->setValue(settings.value("prcopt/err7", 1.0).toDouble());
+    ui->sBMeasurementErrorSNR_Max->setValue(settings.value("prcopt/err5", 52.0).toDouble());
+    ui->sBMeasurementErrorSNR->setValue(settings.value("prcopt/err6", 0.000).toDouble());
+    ui->sBMeasurementErrorReceiver->setValue(settings.value("prcopt/err7", 0.000).toDouble());
     // std
     ui->sBProcessNoise1->setValue(settings.value("prcopt/prn0", 1E-4).toDouble());
     ui->sBProcessNoise2->setValue(settings.value("prcopt/prn1", 1E-3).toDouble());
@@ -1543,11 +1546,11 @@ void OptDialog::loadOptions(QSettings &settings)
     ui->sBProcessNoise4->setValue(settings.value("prcopt/prn3", 10.0).toDouble());
     ui->sBProcessNoise5->setValue(settings.value("prcopt/prn4", 10.0).toDouble());
     ui->sBSatelliteClockStability->setValue(settings.value("prcopt/sclkstab", 5E-12).toDouble());
-    ui->sBValidThresAR->setValue(settings.value("prcopt/thresar0", 100.0).toDouble());
-    ui->sBMaxPositionVarAR->setValue(settings.value("prcopt/thresar1", 100.0).toDouble());
-    ui->sBGlonassHwBias->setValue(settings.value("prcopt/thresar2", 100.0).toDouble());
-    ui->sBValidThresARMin->setValue(settings.value("prcopt/thresar5", 100.0).toDouble());
-    ui->sBValidThresARMax->setValue(settings.value("prcopt/thresar6", 100.0).toDouble());
+    ui->sBValidThresAR->setValue(settings.value("prcopt/thresar0", 3.0).toDouble());
+    ui->sBMaxPositionVarAR->setValue(settings.value("prcopt/thresar1", 0.25).toDouble());
+    ui->sBGlonassHwBias->setValue(settings.value("prcopt/thresar2", 0.0).toDouble());
+    ui->sBValidThresARMin->setValue(settings.value("prcopt/thresar5", 3.0).toDouble());
+    ui->sBValidThresARMax->setValue(settings.value("prcopt/thresar6", 3.0).toDouble());
     ui->sBElevationMaskAR->setValue(settings.value("prcopt/elmaskar", 0.0).toDouble());
     ui->sBElevationMaskHold->setValue(settings.value("prcopt/elmaskhold", 0.0).toDouble());
     ui->sBSlipThreshold->setValue(settings.value("prcopt/thresslip", 0.05).toDouble());
@@ -1913,8 +1916,8 @@ void OptDialog::setPosition(int type, QLineEdit **edit, const double *pos)
         ecef2pos(pos, p);
         s1 = p[0] < 0 ? -1 : 1;
         s2 = p[1] < 0 ? -1 : 1;
-        p[0] = fabs(p[0]) * R2D + 1E-12;
-        p[1] = fabs(p[1]) * R2D + 1E-12;
+        p[0] = fabs(p[0]) * R2D;
+        p[1] = fabs(p[1]) * R2D;
         dms1[0] = floor(p[0]); p[0] = (p[0] - dms1[0]) * 60.0;
         dms1[1] = floor(p[0]); dms1[2] = (p[0] - dms1[1]) * 60.0;
         dms2[0] = floor(p[1]); p[1] = (p[1] - dms2[0]) * 60.0;

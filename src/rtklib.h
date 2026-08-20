@@ -55,8 +55,10 @@ extern "C" {
 #ifdef _MSC_VER
 #ifdef WIN_DLL /* for Windows DLL */
 #define EXPORT __declspec(dllexport)
-#else
+#elif !defined(WIN_STATIC)
 #define EXPORT __declspec(dllimport)
+#else
+#define EXPORT // For files bundled into an app.
 #endif
 #else
 #define EXPORT
@@ -67,7 +69,7 @@ extern "C" {
 #elif defined(__GNUC__)
 #define THREADLOCAL __thread
 #elif defined(_MSC_VER)
-#define THREADLOCAL __declspec(__thread)
+#define THREADLOCAL __declspec(thread)
 #else
 #define THREADLOCAL
 #endif
@@ -76,7 +78,7 @@ extern "C" {
 
 #define VER_RTKLIB  "EX"             /* library version */
 
-#define PATCH_LEVEL "2.5.0"               /* patch level */
+#define PATCH_LEVEL "2.5.1"               /* patch level */
 
 /* --- domain fragments, assembled here in original order (umbrella header).
  *     Split from the historical single-file rtklib.h; behaviour-preserving. --- */

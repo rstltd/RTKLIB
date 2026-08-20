@@ -55,11 +55,12 @@
 
 #define NMAX        10              /* order of polynomial interpolation */
 #define MAXDTE      900.0           /* max time difference to ephem time (s) */
-#define EXTERR_CLK  1E-3            /* extrapolation error for clock (m/s) */
+#define EXTERR_CLK  0.4E-3          /* extrapolation error for clock (m/s) */
 #define EXTERR_EPH  5E-7            /* extrapolation error for ephem (m/s^2) */
+#define MAX_BIAS_SYS 6              /* # of constellations supported */
 
 /* table to translate code to code bias table index  */
-static int8_t code_bias_ix[NSYS][MAXCODE];
+static int8_t code_bias_ix[MAX_BIAS_SYS][MAXCODE];
 /* initialize code bias lookup table -------------------------------------------
 *       -1 = code not supported
 *        0 = reference code (0 bias)
@@ -68,7 +69,7 @@ static int8_t code_bias_ix[NSYS][MAXCODE];
 static void init_bias_ix(void) {
     int i,j;
 
-    for (i=0;i<NSYS;i++) for (j=0;j<MAXCODE;j++)
+    for (i=0;i<MAX_BIAS_SYS;i++) for (j=0;j<MAXCODE;j++)
         code_bias_ix[i][j]=-1;
 
     /* GPS */
@@ -145,7 +146,7 @@ static int readsp3h(FILE *fp, gtime_t *time, char *type, int *sats,
             bfact[0]=str2num(buff, 3,10);
             bfact[1]=str2num(buff,14,12);
         }
-        else if (i==2*nl+11){
+        else if (i==2*nl+7){
             break; /* at end of header */
         }
         i=i+1; /* line counter */
@@ -158,7 +159,7 @@ static int addpeph(nav_t *nav, peph_t *peph)
     peph_t *nav_peph;
 
     if (nav->ne>=nav->nemax) {
-        nav->nemax+=256;
+        nav->nemax += nav->nemax < 4 ? 1 : nav->nemax / 4;
         if (!(nav_peph=(peph_t *)realloc(nav->peph,sizeof(peph_t)*nav->nemax))) {
             trace(1,"readsp3b malloc error n=%d\n",nav->nemax);
             free(nav->peph); nav->peph=NULL; nav->ne=nav->nemax=0;
@@ -185,6 +186,8 @@ static void readsp3b(FILE *fp, char type, int *sats, int ns, double *bfact,
     while (fgets(buff,sizeof(buff),fp)) {
 
         if (!strncmp(buff,"EOF",3)) break;
+
+        if (buff[0] == '/' && buff[1] == '*') continue; // Comment.
 
         if (buff[0]!='*'||str2time(buff,3,28,&time)) {
             trace(2,"sp3 invalid epoch %31.31s\n",buff);
@@ -402,14 +405,16 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
         if ((cbias=str2num(buff,26,9))==0.0) continue;
 
         if (sta&&(!strcmp(str1,"G")||!strcmp(str1,"R"))) { /* receiver DCB */
-/* receiver DCBs never used in RTKLIB so remove support */
-//            for (i=0;i<MAXRCV;i++) {
-//                if (!strcmp(sta[i].name,str2)) break;
-//            }
-//            if (i<MAXRCV) {
-//                j=!strcmp(str1,"G")?0:1;
-//                nav->rbias[i][j][type-1]=cbias*1E-9*CLIGHT; /* ns -> m */
-//            }
+#ifdef RTK_DISABLED
+            /* Receiver DCBs never used in RTKLIB so remove support */
+            for (i=0;i<MAXRCV;i++) {
+                if (!strcmp(sta[i].name,str2)) break;
+            }
+            if (i<MAXRCV) {
+                j=!strcmp(str1,"G")?0:1;
+                nav->rbias[i][j][type-1]=cbias*1E-9*CLIGHT; /* ns -> m */
+            }
+#endif
         }
         else if ((sat=satid2no(str1))) { /* satellite dcb */
             nav->cbias[sat-1][type-1][0]=-cbias*1E-9*CLIGHT; /* ns -> m */
@@ -431,7 +436,7 @@ static int sys2ix(int sys)
         case SYS_QZS: return 4;
         case SYS_IRN: return 5;
     }
-    return 0;
+    return -1;
 }
 /* lookup code bias from table ----------------
 *       return 0 if not found
@@ -442,11 +447,12 @@ extern double code2bias(const nav_t *nav, int sys, int sat, int code, int mode) 
     int sys_ix,frq_ix,code_ix;
     double bias=0;
 
+    if (code <= CODE_NONE) return 0;
     sys_ix=sys2ix(sys);
     frq_ix=code2idx(sys,code);
-    if (frq_ix>=0&&sat<=MAXSAT) {
+    if (sys_ix >= 0 && sys_ix < MAX_BIAS_SYS && frq_ix >= 0 && sat <= MAXSAT) {
         code_ix = code_bias_ix[sys_ix][code];
-        if (code_ix<0) return 0.0;  /* no bias-table column (e.g. QZSS/NavIC) -> avoid negative-index read */
+        if (code_ix < 0) return 0;  /* no bias-table column (e.g. QZSS/NavIC) -> avoid negative-index read */
         bias=nav->cbias[sat-1][frq_ix][code_ix];  // absolute bias
         if (mode==0)
             bias-=nav->cbias[sat-1][frq_ix][0];  // difference with reference
@@ -480,7 +486,7 @@ static int readbiaf(const char *file, nav_t *nav)
 {
     FILE *fp;
     double cbias;
-    char buff[256],bias[6]="",svn[6]="",prn[6]="",obs1[6]="",obs2[6];
+    char buff[256],bias[4]="",svn[4]="",prn[4]="",obs1[4]="",obs2[4];
     int sat,sys_ix,frq_ix,code1,code2,bias_ix1,bias_ix2,sys;
 
     trace(3,"readbiaf: file=%s\n",file);
@@ -490,12 +496,22 @@ static int readbiaf(const char *file, nav_t *nav)
         return 0;
     }
     while (fgets(buff,sizeof(buff),fp)) {
-        if (sscanf(buff,"%4s %5s %4s %4s %4s",bias,svn,prn,obs1,obs2)<5) continue;
-        if (obs1[0]!='C'&&obs1[0]!='L') continue;  /* keep code (C) and phase (L) OSBs */
+        /* need through the value field start (col 70); str2num() clamps to the
+           line end, and a short/absent value parses to 0 and is skipped below.
+           Upstream requires >=91 (i.e. a trailing std-dev column), which drops
+           otherwise-valid records such as test/char/data/synthetic_osb.bia. */
+        if ((int)strlen(buff)<71) continue;
+        strncpy(bias, buff+1,  3); bias[3] ='\0';
+        strncpy(prn,  buff+11, 3); prn[3]  ='\0';
+        strncpy(obs1, buff+25, 3); obs1[3] ='\0';
+        strncpy(obs2, buff+30, 3); obs2[3] ='\0';  /* OBS2 column is 30, not 29 */
+        /* keep code (C) and phase (L) OSBs; fixed-column parse tolerates a blank SVN field */
+        if (obs1[0]!='C'&&obs1[0]!='L') continue;
         if ((cbias=str2num(buff,70,21))==0.0) continue;
         sat=satid2no(prn);
         sys=satsys(sat,NULL);
         sys_ix=sys2ix(sys);
+        if (sys_ix < 0 || sys_ix >= MAX_BIAS_SYS) continue;
         if (!(code1=obs2code(&obs1[1]))) continue; /* skip if code not valid */
         if ((frq_ix=code2idx(sys,code1))<0) continue;
         if ((bias_ix1=code_bias_ix[sys_ix][code1])<0) continue;
@@ -652,7 +668,7 @@ static int pephpos(gtime_t time, int sat, const nav_t *nav, double *rs,
     else if (c[0]!=0.0&&c[1]!=0.0) {
         dts[0]=(c[1]*t[0]-c[0]*t[1])/(t[0]-t[1]);
         i=t[0]<-t[1]?0:1;
-        std=nav->peph[index+i].std[sat-1][3]+EXTERR_CLK*fabs(t[i]);
+        std = nav->peph[index+i].std[sat-1][3] * CLIGHT + EXTERR_CLK * fabs(t[i]);
     }
     else {
         dts[0]=0.0;
@@ -660,9 +676,10 @@ static int pephpos(gtime_t time, int sat, const nav_t *nav, double *rs,
     if (varc) *varc=SQR(std);
     return 1;
 }
+
 /* satellite clock by precise clock ------------------------------------------*/
-extern int pephclk(gtime_t time, int sat, const nav_t *nav, double *dts,
-                   double *varc)
+static int pephclk1(gtime_t time, int sat, const nav_t *nav, double *dts,
+                    double *varc)
 {
     double t[2],c[2],std;
     int i,j,k,index;
@@ -674,7 +691,7 @@ extern int pephclk(gtime_t time, int sat, const nav_t *nav, double *dts,
         timediff(time,nav->pclk[0].time)<-MAXDTE||
         timediff(time,nav->pclk[nav->nc-1].time)>MAXDTE) {
         trace(3,"no prec clock %s sat=%2d\n",time2str(time,tstr,0),sat);
-        return 1;
+        return 0;
     }
     /* binary search */
     for (i=0,j=nav->nc-1;i<j;) {
@@ -709,6 +726,27 @@ extern int pephclk(gtime_t time, int sat, const nav_t *nav, double *dts,
     if (varc) *varc=SQR(std);
     return 1;
 }
+// Precise clock -------------------------------------------------------------
+// Search for a precise clock in either the precise clock or the precise
+// ephemeris data, in this order.
+// Args   : gtime_t time       I   time (GPST)
+//          int    sat         I   satellite number
+//          nav_t  *nav        I   navigation data
+//          double *dts        O   satellite clock bias (s)
+//          double *var        O   satellite clock variance (m^2)
+// Return : 1 in success; 0 on failure.
+//
+// Note: the dts and varc outputs are not modified on failure.
+extern int pephclk(gtime_t time, int sat, const nav_t *nav, double *dts, double *varc) {
+
+  if (pephclk1(time, sat, nav, dts, varc)) return 1;
+  double rs[3], dts2;
+  if (!pephpos(time, sat, nav, rs, &dts2, NULL, varc)) return 0;
+  if (dts2 == 0.0) return 0;
+  *dts = dts2;
+  return 1;
+}
+
 /* satellite antenna phase center offset ---------------------------------------
 * compute satellite antenna phase center offset in ecef
 * args   : gtime_t time       I   time (gpst)
@@ -816,12 +854,12 @@ extern int peph2pos(gtime_t time, int sat, const nav_t *nav, int opt,
     if (sat<=0||MAXSAT<sat) return 0;
 
     /* satellite position and clock bias */
-    if (!pephpos(time,sat,nav,rss,dtss,&vare,&varc)||
-        !pephclk(time,sat,nav,dtss,&varc)) return 0;
+    if (!pephpos(time,sat,nav,rss,dtss,&vare,&varc)) return 0;
+    pephclk1(time, sat, nav, dtss, &varc);
 
     time_tt=timeadd(time,tt);
-    if (!pephpos(time_tt,sat,nav,rst,dtst,NULL,NULL)||
-        !pephclk(time_tt,sat,nav,dtst,NULL)) return 0;
+    if (!pephpos(time_tt,sat,nav,rst,dtst,NULL,NULL)) return 0;
+    pephclk1(time_tt, sat, nav, dtst, NULL);
 
     /* satellite antenna offset correction */
     if (opt) {

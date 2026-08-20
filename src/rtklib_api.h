@@ -19,7 +19,7 @@ EXPORT int  satsys  (int sat, int *prn);
 EXPORT int  satid2no(const char *id);
 EXPORT void satno2id(int sat, char id[8]);
 EXPORT uint8_t obs2code(const char *obs);
-EXPORT char *code2obs(uint8_t code);
+EXPORT const char *code2obs(uint8_t code);
 EXPORT double code2freq(int sys, uint8_t code, int fcn);
 EXPORT double sat2freq(int sat, uint8_t code, const nav_t *nav);
 EXPORT int  code2idx(int sys, uint8_t code);
@@ -197,6 +197,8 @@ EXPORT int iontec(gtime_t time, const nav_t *nav, const double *pos,
 EXPORT void readtec(const char *file, nav_t *nav, int opt);
 EXPORT int ionocorr(gtime_t time, const nav_t *nav, int sat, const double *pos,
                     const double *azel, int ionoopt, double *ion, double *var);
+EXPORT int ionvtec(gtime_t time, const nav_t *nav, const double *pos,
+                   const double *azel, double freq, double *delay, double *var);
 EXPORT int tropcorr(gtime_t time, const nav_t *nav, const double *pos,
                     const double *azel, int tropopt, double *trp, double *var);
 EXPORT int seliflc(int optnf, int sys);
@@ -486,7 +488,7 @@ EXPORT int  rtkoutstat(rtk_t *rtk, int level, char *buff);
 /* precise point positioning -------------------------------------------------*/
 EXPORT void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);
 EXPORT int pppnx(const prcopt_t *opt);
-EXPORT int pppoutstat(rtk_t *rtk, char *buff);
+EXPORT int pppoutstat(rtk_t *rtk, char *buff, int level);
 
 EXPORT int ppp_ar(rtk_t *rtk, const obsd_t *obs, int n, int *exc,
                   const nav_t *nav, const double *azel, double *x, double *P);
@@ -524,8 +526,8 @@ EXPORT int  rtksvropenstr(rtksvr_t *svr, int index, int str, const char *path,
 EXPORT void rtksvrclosestr(rtksvr_t *svr, int index);
 EXPORT void rtksvrlock  (rtksvr_t *svr);
 EXPORT void rtksvrunlock(rtksvr_t *svr);
-EXPORT int  rtksvrostat (rtksvr_t *svr, int type, gtime_t *time, int *sat,
-                         double *az, double *el, int **snr, int *vsat);
+EXPORT int  rtksvrostat (rtksvr_t *svr, int type, gtime_t *time, int sat[MAXSAT],
+                         double *az, double *el, int snr[MAXSAT][NFREQ], int vsat[MAXSAT][NFREQ]);
 EXPORT void rtksvrsstat (rtksvr_t *svr, int *sstat, char *msg);
 EXPORT int  rtksvrmark(rtksvr_t *svr, const char *name, const char *comment);
 

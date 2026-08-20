@@ -453,10 +453,6 @@ static eph_t *seleph(gtime_t time, int sat, int iode, const nav_t *nav)
         if (iode>=0&&nav->eph[i].iode!=iode) continue;
         if (sys==SYS_GAL) {
             sel=getseleph(SYS_GAL);
-            /* this code is from 2.4.3 b34 but does not seem to be fully supported,
-               so for now I have dropped back to the b33 code */
-            /* if (sel==0&&!(nav->eph[i].code&(1<<9))) continue; */ /* I/NAV */
-            /*if (sel==1&&!(nav->eph[i].code&(1<<8))) continue; */ /* F/NAV */
             if (sel==1&&!(nav->eph[i].code&(1<<9))) continue; /* I/NAV */
             if (sel==2&&!(nav->eph[i].code&(1<<8))) continue; /* F/NAV */
             if (timediff(nav->eph[i].toe,time)>=0.0) continue; /* AOD<=0 */
@@ -470,7 +466,7 @@ static eph_t *seleph(gtime_t time, int sat, int iode, const nav_t *nav)
               sat,iode);
         return NULL;
     }
-    trace(4,"seleph: sat=%d dt=%.0f\n",sat,tmin);
+    trace(4,"seleph: sat=%d dt=%.0f j=%d iode=%d, sel=%d\n",sat,tmin,j,nav->eph[j].iode, sel);
     return nav->eph+j;
 }
 /* select glonass ephemeris --------------------------------------------------*/
@@ -808,8 +804,13 @@ extern void satposs(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
         time[i]=timeadd(obs[i].time,-pr/CLIGHT);
 
         /* satellite clock offset from precise products or broadcast ephemeris */
-        if (ephopt==EPHOPT_PREC&&nav->nc>0) {
-          if(!pephclk(time[i],obs[i].sat,nav,&dt,NULL)) {
+
+        // Note: this uses as input the estimated satellite clock time without
+        // correction but the precise clock corrections are wrt GPST.  The
+        // satellite clock drift over this small period is considered
+        // negligible to the clock offset lookup here.
+        if (ephopt == EPHOPT_PREC) {
+          if (!pephclk(time[i], obs[i].sat, nav, &dt, NULL)) {
             trace(3,"no precise clock %s sat=%2d\n",time2str(time[i],tstr,3),obs[i].sat);
             continue;
           }

@@ -173,12 +173,12 @@ void __fastcall TMonitorDialog::ClearTable(void)
 	SelObs  ->Visible=TypeF==1;
 	SelSys  ->Visible=TypeF==1||TypeF==5;
 	SelSys2 ->Visible=TypeF==2||TypeF==14;
-	SelSat  ->Visible=TypeF==2||TypeF==5;
+	SelSat  ->Visible=TypeF==2||TypeF==5||TypeF==6||TypeF==7||TypeF==14;
 	SelStr  ->Visible=TypeF==12||TypeF==14||TypeF==15||TypeF==16;
 	SelStr2 ->Visible=TypeF==17;
 	SelFmt  ->Visible=TypeF==16;
 	SelEph  ->Visible=TypeF==2;
-	SelStr  ->Left=(TypeF==14)?SelSys->Left+SelSys->Width+1:Type->Left+Type->Width+1;
+	SelStr  ->Left=(TypeF==14)?SelSat->Left+SelSat->Width+1:Type->Left+Type->Width+1;
 }
 //---------------------------------------------------------------------------
 void __fastcall TMonitorDialog::Timer2Timer(TObject *Sender)
@@ -410,8 +410,14 @@ void __fastcall TMonitorDialog::ShowRtk(void)
 	rtksvrunlock(&rtksvr); // unlock
 	
 	for (j=k=0;j<MAXSAT;j++) {
-		if (rtk->opt.mode==PMODE_SINGLE&&!rtk->ssat[j].vs) continue;
-		if (rtk->opt.mode!=PMODE_SINGLE&&!rtk->ssat[j].vsat[0]) continue;
+		if (rtk->opt.mode == PMODE_SINGLE) {
+                  if (!rtk->ssat[j].vs) continue;
+                } else {
+                  int any = 0;
+                  for (int fi = 0; fi < NFREQ; fi++)
+                    if (rtk->ssat[j].vsat[fi]) { any = 1; break; }
+                  if (!any) continue;
+                }
 		azel[  k*2]=rtk->ssat[j].azel[0];
 		azel[1+k*2]=rtk->ssat[j].azel[1];
 		k++;
@@ -478,8 +484,14 @@ void __fastcall TMonitorDialog::ShowRtk(void)
 				  rtk->opt.snrmask.mask[3][0],rtk->opt.snrmask.mask[3][1],rtk->opt.snrmask.mask[3][2],
 				  rtk->opt.snrmask.mask[3][3],rtk->opt.snrmask.mask[3][4],rtk->opt.snrmask.mask[3][5],
 				  rtk->opt.snrmask.mask[3][6],rtk->opt.snrmask.mask[3][7],rtk->opt.snrmask.mask[3][8]);
-	Tbl->Cells[0][i  ]="Rec Dynamic/Earth Tides Correction";
-	Tbl->Cells[1][i++]=s.sprintf("%s, %s",rtk->opt.dynamics?"ON":"OFF",rtk->opt.tidecorr?"ON":"OFF");
+
+	Tbl->Cells[0][i  ]="Rec Dynamics";
+	Tbl->Cells[1][i++]=s.sprintf("%s",rtk->opt.dynamics?"ON":"OFF");
+
+	Tbl->Cells[0][i  ]="Earth Tides Correction";
+        const char *tideopts[]={"OFF","Solid Earth","Ocean Loading","Solid Earth + Ocean Loading","Solid Pole",
+          "Solid Earth + Solid Pole","Ocean Loading + Sold Pole","Solid Earth + Ocean Loading + Solid Pole"};
+        Tbl->Cells[1][i++]=s.sprintf("%s", tideopts[rtk->opt.tidecorr & 7]);
 	
 	Tbl->Cells[0][i  ]="Ionosphere/Troposphere Model";
 	Tbl->Cells[1][i++]=s.sprintf("%s, %s",ionoopt[rtk->opt.ionoopt],tropopt[rtk->opt.tropopt]);
@@ -740,8 +752,13 @@ void __fastcall TMonitorDialog::ShowSat(void)
 	Label->Caption="";
 	
 	for (i=0;i<MAXSAT;i++) {
-		ssat=rtk->ssat+i;
-		vsat[i]=ssat->vs;
+                if (rtk->opt.mode == PMODE_SINGLE) {
+                  vsat[i] = rtk->ssat[i].vs;
+                } else {
+                  vsat[i] = 0;
+                  for (int fi = 0; fi < NFREQ; fi++)
+                    if (rtk->ssat[i].vsat[fi]) { vsat[i] = 1; break; }
+                }
 	}
 	for (i=0,n=1;i<MAXSAT;i++) {
 		if (!(satsys(i+1,NULL)&sys)) continue;
@@ -764,7 +781,7 @@ void __fastcall TMonitorDialog::ShowSat(void)
 		if (SelSat->ItemIndex==1&&!vsat[i]) continue;
 		satno2id(i+1,id);
 		Tbl->Cells[j++][n]=id;
-		Tbl->Cells[j++][n]=ssat->vs?"OK":"-";
+		Tbl->Cells[j++][n]=vsat[i]?"OK":"-";
 		az=ssat->azel[0]*R2D; if (az<0.0) az+=360.0;
 		el=ssat->azel[1]*R2D;
 		Tbl->Cells[j++][n]=s.sprintf("%.1f",az);
@@ -991,7 +1008,7 @@ void __fastcall TMonitorDialog::SetObs(void)
 void __fastcall TMonitorDialog::ShowObs(void)
 {
 	AnsiString s;
-	char tstr[40],id[8],*code;
+	char tstr[40],id[8];
 	int i,j,k,n=0,nex=ObsMode?NEXOBS:0,sys=sys_tbl[SelSys->ItemIndex];
 	
         obsd_t *obs = static_cast<obsd_t *>(calloc(MAXOBS * 2, sizeof(obsd_t)));
@@ -1023,7 +1040,7 @@ void __fastcall TMonitorDialog::ShowObs(void)
 		Tbl->Cells[j++][i+1]=id;
 		Tbl->Cells[j++][i+1]=s.sprintf("(%d)",obs[i].rcv);
 		for (k=0;k<NFREQ+nex;k++) {
-			code=code2obs(obs[i].code[k]);
+                        const char *code=code2obs(obs[i].code[k]);
 			if (*code) Tbl->Cells[j++][i+1]=s.sprintf("%s",code);
 			else       Tbl->Cells[j++][i+1]="-";
 		}
@@ -1782,35 +1799,37 @@ void __fastcall TMonitorDialog::SetRtcm(void)
 void __fastcall TMonitorDialog::ShowRtcm(void)
 {
 	AnsiString s;
-	static rtcm_t rtcm;
 	double pos[3]={0};
 	int i=1,j,format;
 	char tstr[40]="-",mstr1[1024]="",mstr2[1024]="",*p1=mstr1,*p2=mstr2;
 	
+	rtcm_t *rtcm = (rtcm_t *)malloc(sizeof(rtcm_t));
+    if (rtcm == NULL) return;
+
 	rtksvrlock(&rtksvr);
 	format=rtksvr.format[Str1];
-	rtcm=rtksvr.rtcm[Str1];
+	*rtcm=rtksvr.rtcm[Str1];
 	rtksvrunlock(&rtksvr);
 	
-	if (rtcm.time.time) time2str(rtcm.time,tstr,3);
+	if (rtcm->time.time) time2str(rtcm->time,tstr,3);
 	
 	for (j=1;j<100;j++) {
-		if (rtcm.nmsg2[j]==0) continue;
-        p1+=sprintf(p1,"%s%d (%d)",p1>mstr1?",":"",j,rtcm.nmsg2[j]);
+		if (rtcm->nmsg2[j]==0) continue;
+        p1+=sprintf(p1,"%s%d (%d)",p1>mstr1?",":"",j,rtcm->nmsg2[j]);
 	}
-	if (rtcm.nmsg2[0]>0) {
-		sprintf(p1,"%sother (%d)",p1>mstr1?",":"",rtcm.nmsg2[0]);
+	if (rtcm->nmsg2[0]>0) {
+		sprintf(p1,"%sother (%d)",p1>mstr1?",":"",rtcm->nmsg2[0]);
 	}
 	for (j=1;j<300;j++) {
-		if (rtcm.nmsg3[j]==0) continue;
-        p2+=sprintf(p2,"%s%d(%d)",p2>mstr2?",":"",j+1000,rtcm.nmsg3[j]);
+		if (rtcm->nmsg3[j]==0) continue;
+        p2+=sprintf(p2,"%s%d(%d)",p2>mstr2?",":"",j+1000,rtcm->nmsg3[j]);
 	}
 	for (j=300;j<399;j++) {
-		if (rtcm.nmsg3[j]==0) continue;
-        p2+=sprintf(p2,"%s%d(%d)",p2>mstr2?",":"",j+3770,rtcm.nmsg3[j]);
+		if (rtcm->nmsg3[j]==0) continue;
+        p2+=sprintf(p2,"%s%d(%d)",p2>mstr2?",":"",j+3770,rtcm->nmsg3[j]);
 	}
-	if (rtcm.nmsg3[0]>0) {
-		sprintf(p2,"%sother(%d)",p2>mstr2?",":"",rtcm.nmsg3[0]);
+	if (rtcm->nmsg3[0]>0) {
+		sprintf(p2,"%sother(%d)",p2>mstr2?",":"",rtcm->nmsg3[0]);
 	}
 	Label->Caption="";
 	
@@ -1823,43 +1842,45 @@ void __fastcall TMonitorDialog::ShowRtcm(void)
 	Tbl->Cells[1][i++]=tstr;
 	
 	Tbl->Cells[0][i  ]="Station ID";
-	Tbl->Cells[1][i++]=s.sprintf("%d",rtcm.staid);
+	Tbl->Cells[1][i++]=s.sprintf("%d",rtcm->staid);
 	
 	Tbl->Cells[0][i  ]="Station Health";
-	Tbl->Cells[1][i++]=s.sprintf("%d",rtcm.stah);
+	Tbl->Cells[1][i++]=s.sprintf("%d",rtcm->stah);
 	
 	Tbl->Cells[0][i  ]="Sequence No";
-	Tbl->Cells[1][i++]=s.sprintf("%d",rtcm.seqno);
+	Tbl->Cells[1][i++]=s.sprintf("%d",rtcm->seqno);
 	
 	Tbl->Cells[0][i  ]="RTCM Special Message";
-	Tbl->Cells[1][i++]=rtcm.msg;
+	Tbl->Cells[1][i++]=rtcm->msg;
 	
 	Tbl->Cells[0][i  ]="Last Message";
-	Tbl->Cells[1][i++]=rtcm.msgtype;
+	Tbl->Cells[1][i++]=rtcm->msgtype;
 	
 	Tbl->Cells[0][i  ]="# of RTCM Messages";
 	Tbl->Cells[1][i++]=format==STRFMT_RTCM2?mstr1:mstr2;
 	
 	Tbl->Cells[0][i  ]="MSM Signals for GPS";
-	Tbl->Cells[1][i++]=rtcm.msmtype[0];
+	Tbl->Cells[1][i++]=rtcm->msmtype[0];
 	
 	Tbl->Cells[0][i  ]="MSM Signals for GLONASS";
-	Tbl->Cells[1][i++]=rtcm.msmtype[1];
+	Tbl->Cells[1][i++]=rtcm->msmtype[1];
 	
 	Tbl->Cells[0][i  ]="MSM Signals for Galileo";
-	Tbl->Cells[1][i++]=rtcm.msmtype[2];
+	Tbl->Cells[1][i++]=rtcm->msmtype[2];
 	
 	Tbl->Cells[0][i  ]="MSM Signals for QZSS";
-	Tbl->Cells[1][i++]=rtcm.msmtype[3];
+	Tbl->Cells[1][i++]=rtcm->msmtype[3];
 	
 	Tbl->Cells[0][i  ]="MSM Signals for SBAS";
-	Tbl->Cells[1][i++]=rtcm.msmtype[4];
+	Tbl->Cells[1][i++]=rtcm->msmtype[4];
 	
 	Tbl->Cells[0][i  ]="MSM Signals for BDS";
-	Tbl->Cells[1][i++]=rtcm.msmtype[5];
+	Tbl->Cells[1][i++]=rtcm->msmtype[5];
 	
 	Tbl->Cells[0][i  ]="MSM Signals for NavIC";
-	Tbl->Cells[1][i++]=rtcm.msmtype[6];
+	Tbl->Cells[1][i++]=rtcm->msmtype[6];
+
+    free(rtcm);
 }
 //---------------------------------------------------------------------------
 void __fastcall TMonitorDialog::SetRtcmDgps(void)
@@ -1918,7 +1939,7 @@ void __fastcall TMonitorDialog::SetRtcmSsr(void)
 		"Phase Bias(m)"
 	};
 	int i,width[]={
-		25,30,30,30,30,25,15,115,50,50,50,50,50,50,50,50,50,50,180,180
+		25,30,30,30,30,25,15,115,50,50,50,50,50,50,50,50,50,50,250,250
 	};
 	char *code;
 
@@ -1943,6 +1964,10 @@ void __fastcall TMonitorDialog::ShowRtcmSsr(void)
 	time=rtksvr.rtk.sol.time;
 	for (i=n=0;i<MAXSAT;i++) {
 		if (!(satsys(i+1,NULL)&sys)) continue;
+		int valid = rtksvr.rtcm[Str1].ssr[i].t0[0].time &&
+			fabs(timediff(time, rtksvr.rtcm[Str1].ssr[i].t0[0])) <= 1800.0 &&
+			rtksvr.rtcm[Str1].ssr[i].iode >= 0;
+		if (SelSat->ItemIndex == 1 && !valid) continue;
 		ssr[n]=rtksvr.rtcm[Str1].ssr[i];
 		sat[n++]=i+1;
 	}
@@ -1959,7 +1984,7 @@ void __fastcall TMonitorDialog::ShowRtcmSsr(void)
 		Tbl->Cells[j++][i+1]=valid?"OK":"-";
 		Tbl->Cells[j++][i+1]=s.sprintf("%.0f",ssr[i].udi[0]);
 		Tbl->Cells[j++][i+1]=s.sprintf("%.0f",ssr[i].udi[2]);
-		Tbl->Cells[j++][i+1]=s.sprintf("%d",ssr[i].iode);
+		Tbl->Cells[j++][i+1] = ssr[i].iode < 0 ? "-" : s.sprintf("%d", ssr[i].iode);
 		Tbl->Cells[j++][i+1]=s.sprintf("%d",ssr[i].ura);
 		Tbl->Cells[j++][i+1]=s.sprintf("%d",ssr[i].refd);
 		if (ssr[i].t0[0].time) time2str(ssr[i].t0[0],tstr,0); else strcpy(tstr,"-");

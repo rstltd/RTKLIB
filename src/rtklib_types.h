@@ -184,6 +184,18 @@ typedef struct {        /* TEC grid type */
     float *rms;         /* RMS values (tecu) */
 } tec_t;
 
+typedef struct {
+    double udint;
+    double qi;
+    int iod;
+    int nlay;
+    int nmax[4];
+    int mmax[4];
+    double hgt[4];
+    double cosC[4][16][16];
+    double sinC[4][16][16];
+} vtec_t;
+
 typedef struct {        /* SBAS message type */
     int week,tow;       /* reception time */
     uint8_t prn,rcv;    /* SBAS satellite PRN,receiver number */
@@ -268,7 +280,6 @@ typedef struct {        /* SSR correction type */
     double hrclk;       /* high-rate clock correction (m) */
     float  cbias[MAXCODE]; /* code biases (m) */
     double pbias[MAXCODE]; /* phase biases (m) */
-    float  stdpb[MAXCODE]; /* std-dev of phase biases (m) */
     double yaw_ang,yaw_rate; /* yaw angle and yaw rate (deg,deg/s) */
     uint8_t update;     /* update flag (0:no update,1:update) */
 } ssr_t;
@@ -304,6 +315,7 @@ typedef struct {        /* navigation data type */
     int glo_fcn[32];    /* GLONASS FCN + 8 */
     double cbias[MAXSAT][NFREQ][MAX_CODE_BIASES]; /* satellite code biases] (m) */
     double pbias[MAXSAT][NFREQ][MAX_CODE_BIASES]; /* satellite phase biases (m), file OSB */
+    vtec_t vtec;        /* ionosphere VTEC coefficients */
     pcv_t pcvs[MAXSAT]; /* satellite antenna pcv */
     sbssat_t sbssat;    /* SBAS satellite corrections */
     sbsion_t sbsion[MAXBAND+1]; /* SBAS ionosphere corrections */
@@ -654,8 +666,9 @@ typedef struct {        /* RTK control/result type */
     prcopt_t opt;       /* processing options */
     int initial_mode;   /* initial positioning mode */
     int epoch;          /* epoch number */
-    int intpres_nb;     // Time interpolation of residuals, number of previous base observations.
-    obsd_t intpres_obsb[MAXOBS]; // Time interpolation of residuals, previous base observations.
+    int intpres_nb;     /* Time interpolation of residuals, number of previous base observations */
+    int vtec_used;      /* indicates VTEC coeffs have been used to init ion states */
+    obsd_t intpres_obsb[MAXOBS]; /* Time interpolation of residuals, previous base observations */
     void *solstat;      /* solution-status output context (statout_t*, bound by rtkinit; see rtkpos.c) */
 } rtk_t;
 
@@ -673,7 +686,6 @@ typedef struct {        /* receiver raw data control type */
     uint8_t subfrm[MAXSAT][418]; /* subframe buffer (BDS D2 needs 10 sf1 pages*38=380 + sf5 page102 at 380-417) */
     double lockt[MAXSAT][NFREQ+NEXOBS]; /* lock time (s) */
     unsigned char lockflag[MAXSAT][NFREQ+NEXOBS]; /* used for carrying forward cycle slip */
-    double icpp[MAXSAT],off[MAXSAT],icpc; /* carrier params for ss2 */
     double prCA[MAXSAT],dpCA[MAXSAT]; /* L1/CA pseudorange/doppler for javad */
     uint8_t halfc[MAXSAT][NFREQ+NEXOBS]; /* half-cycle resolved */
     char freqn[MAXOBS]; /* frequency number for javad */

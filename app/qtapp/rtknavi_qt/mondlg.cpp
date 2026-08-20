@@ -222,7 +222,7 @@ void MonitorDialog::clearTable()
     ui->cBSelectObservation->setVisible(displayType == 1);
     ui->cBSelectNavigationSystems->setVisible(displayType == 1 || displayType == 5);
     ui->cBSelectSingleNavigationSystem->setVisible(displayType == 2 || displayType == 14);
-    ui->cBSelectSatellites->setVisible(displayType == 2 || displayType == 5);
+    ui->cBSelectSatellites->setVisible(displayType == 2 || displayType == 5 || displayType == 6 || displayType == 7 || displayType == 14);
     ui->cBSelectInputStream->setVisible(displayType == 12 || displayType == 14 || displayType == 15 || displayType == 16);
     ui->cBSelectSolutionStream->setVisible(displayType == 17);
     ui->cBSelectFormat->setVisible(displayType == 16);
@@ -393,7 +393,7 @@ void MonitorDialog::setRtk()
     int width[] = {500, 500};
 
     ui->tWConsole->setColumnCount(2);
-    ui->tWConsole->setRowCount(52 + NFREQ*2);
+    ui->tWConsole->setRowCount(53 + NFREQ*2);
     ui->tWConsole->setHorizontalHeaderLabels(header);
 
     for (int i = 0; (i < ui->tWConsole->columnCount()) && (i < 2); i++)
@@ -464,8 +464,14 @@ void MonitorDialog::showRtk()
     rtksvrunlock(rtksvr); // unlock
 
     for (j = k = 0; j < MAXSAT; j++) {
-        if (rtk->opt.mode == PMODE_SINGLE && !rtk->ssat[j].vs) continue;
-        if (rtk->opt.mode != PMODE_SINGLE && !rtk->ssat[j].vsat[0]) continue;
+        if (rtk->opt.mode == PMODE_SINGLE) {
+          if (!rtk->ssat[j].vs) continue;
+        } else {
+          int any = 0;
+          for (int fi = 0; fi < NFREQ; fi++)
+            if (rtk->ssat[j].vsat[fi]) { any = 1; break; }
+          if (!any) continue;
+        }
         azel[k * 2] = rtk->ssat[j].azel[0];
         azel[k * 2 + 1] = rtk->ssat[j].azel[1];
 		k++;
@@ -480,7 +486,7 @@ void MonitorDialog::showRtk()
     if (rtk->opt.navsys & SYS_IRN) navsys = navsys + tr("NavIC ");
     if (rtk->opt.navsys & SYS_SBS) navsys = navsys + tr("SBAS ");
 
-    if (ui->tWConsole->rowCount() < 55) {
+    if (ui->tWConsole->rowCount() < 53 + NFREQ * 2) {
       free(rtk);
       return;
     }
@@ -526,8 +532,14 @@ void MonitorDialog::showRtk()
                               .arg(rtk->opt.snrmask.mask[2][3], 0).arg(rtk->opt.snrmask.mask[2][4], 0).arg(rtk->opt.snrmask.mask[2][5], 0)
                               .arg(rtk->opt.snrmask.mask[2][6], 0).arg(rtk->opt.snrmask.mask[2][7], 0).arg(rtk->opt.snrmask.mask[2][8], 0));
 
-    ui->tWConsole->item(row,   0)->setText(tr("Rec Dynamic/Earth Tides Correction"));
-    ui->tWConsole->item(row++, 1)->setText(QStringLiteral("%1, %2").arg(rtk->opt.dynamics ? tr("ON") : tr("OFF"), rtk->opt.tidecorr ? tr("ON") : tr("OFF")));
+    ui->tWConsole->item(row,   0)->setText(tr("Rec Dynamics"));
+    ui->tWConsole->item(row++, 1)->setText(QStringLiteral("%1").arg(rtk->opt.dynamics ? tr("ON") : tr("OFF")));
+
+    ui->tWConsole->item(row,   0)->setText(tr("Earth Tides Correction"));
+    const char *tideopts[]={"OFF","Solid Earth","Ocean Loading","Solid Earth + Ocean Loading",
+      "Solid Pole","Solid Earth + Solid Pole","Ocean Loading + Sold Pole",
+      "Solid Earth + Ocean Loading + Solid Pole"};
+    ui->tWConsole->item(row++, 1)->setText(QStringLiteral("%1").arg(tideopts[rtk->opt.tidecorr & 7]));
 
     ui->tWConsole->item(row,   0)->setText(tr("Ionosphere/Troposphere Model"));
     ui->tWConsole->item(row++, 1)->setText(QStringLiteral("%1, %2").arg(ionoopt[rtk->opt.ionoopt < 0 || rtk->opt.ionoopt > 6 ? 0 : rtk->opt.ionoopt],
@@ -792,8 +804,13 @@ void MonitorDialog::showSat()
     rtksvrunlock(rtksvr);
 
     for (i = 0; i < MAXSAT; i++) {
-        ssat = rtk->ssat + i;
-        vsat[i] = ssat->vs;
+        if (rtk->opt.mode == PMODE_SINGLE) {
+          vsat[i] = rtk->ssat[i].vs;
+        } else {
+          vsat[i] = 0;
+          for (int fi = 0; fi < NFREQ; fi++)
+            if (rtk->ssat[i].vsat[fi]) { vsat[i] = 1; break; }
+        }
     }
 
     for (i = 0, nsat = 0; i < MAXSAT; i++) {
@@ -821,7 +838,7 @@ void MonitorDialog::showSat()
         if (ui->cBSelectSatellites->currentIndex() == 1 && !vsat[i]) continue;
         satno2id(i + 1, id);
         ui->tWConsole->item(n, j++)->setText(id);
-        ui->tWConsole->item(n, j++)->setText(ssat->vs ? tr("OK") : tr("-"));
+        ui->tWConsole->item(n, j++)->setText(vsat[i] ? tr("OK") : tr("-"));
         az = ssat->azel[0] * R2D; if (az < 0.0) az += 360.0;
         el = ssat->azel[1] * R2D;
         ui->tWConsole->item(n, j++)->setText(QString::number(az, 'f', 1));
@@ -1065,7 +1082,7 @@ void MonitorDialog::setObservations()
 //---------------------------------------------------------------------------
 void MonitorDialog::showObservations()
 {
-    char tstr[40], id[8], *code;
+    char tstr[40], id[8];
     int i, k, n = 0, nex = ui->cBSelectObservation->currentIndex() ? NEXOBS : 0;
     int sys = sys_tbl[ui->cBSelectNavigationSystems->currentIndex()];
     int std = ui->cBSelectObservation->currentIndex();
@@ -1107,7 +1124,7 @@ void MonitorDialog::showObservations()
         ui->tWConsole->item(i, j++)->setText(id);
         ui->tWConsole->item(i, j++)->setText(QString("(%1)").arg(obs[i].rcv));
         for (k = 0; k < NFREQ + nex; k++) {
-            code = code2obs(obs[i].code[k]);
+            const char *code = code2obs(obs[i].code[k]);
             if (*code) ui->tWConsole->item(i, j++)->setText(code);
             else ui->tWConsole->item(i, j++)->setText("-");
         }
@@ -1931,37 +1948,39 @@ void MonitorDialog::setRtcm()
 //---------------------------------------------------------------------------
 void MonitorDialog::showRtcm()
 {
-    static rtcm_t rtcm;
     int i = 0, j, format;
     QString mstr1, mstr2;
     char tstr[40] = "-";
 
     int effectiveStream = (inputStream < 0 || inputStream > 2) ? 0 : inputStream;
 
+    rtcm_t *rtcm = (rtcm_t *)malloc(sizeof(rtcm_t));
+    if (rtcm == NULL) return;
+
     rtksvrlock(rtksvr);
     format = rtksvr->format[effectiveStream];
-    rtcm = rtksvr->rtcm[effectiveStream];
+    *rtcm = rtksvr->rtcm[effectiveStream];
     rtksvrunlock(rtksvr);
 
-    if (rtcm.time.time) time2str(rtcm.time, tstr, 3);
+    if (rtcm->time.time) time2str(rtcm->time, tstr, 3);
 
     for (j = 1; j < 100; j++) {
-        if (rtcm.nmsg2[j] == 0) continue;
-        mstr1 += QString("%1%2 (%3)").arg(mstr1.isEmpty() ? "" : ",").arg(j).arg(rtcm.nmsg2[j]);
+        if (rtcm->nmsg2[j] == 0) continue;
+        mstr1 += QString("%1%2 (%3)").arg(mstr1.isEmpty() ? "" : ",").arg(j).arg(rtcm->nmsg2[j]);
 	}
-    if (rtcm.nmsg2[0] > 0) {
-        mstr1 += QString("%1other (%2)").arg(mstr1.isEmpty() ? "" : ",").arg(rtcm.nmsg2[0]);
+    if (rtcm->nmsg2[0] > 0) {
+        mstr1 += QString("%1other (%2)").arg(mstr1.isEmpty() ? "" : ",").arg(rtcm->nmsg2[0]);
     }
     for (j = 1; j < 300; j++) {
-        if (rtcm.nmsg3[j] == 0) continue;
-        mstr2 += QString("%1%2(%3)").arg(mstr2.isEmpty() ? "" : ",").arg(j + 1000).arg(rtcm.nmsg3[j]);
+        if (rtcm->nmsg3[j] == 0) continue;
+        mstr2 += QString("%1%2(%3)").arg(mstr2.isEmpty() ? "" : ",").arg(j + 1000).arg(rtcm->nmsg3[j]);
 	}
     for (j = 300; j < 399; j++) {
-        if (rtcm.nmsg3[j] == 0) continue;
-        mstr2+=QString("%1%2(%3)").arg(mstr2.isEmpty()?"":",").arg(j+3770).arg(rtcm.nmsg3[j]);
+        if (rtcm->nmsg3[j] == 0) continue;
+        mstr2+=QString("%1%2(%3)").arg(mstr2.isEmpty()?"":",").arg(j+3770).arg(rtcm->nmsg3[j]);
     }
-    if (rtcm.nmsg3[0] > 0)
-        mstr2 += QString("%1other(%2)").arg(mstr2.isEmpty() ? "" : ",").arg(rtcm.nmsg3[0]);
+    if (rtcm->nmsg3[0] > 0)
+        mstr2 += QString("%1other(%2)").arg(mstr2.isEmpty() ? "" : ",").arg(rtcm->nmsg3[0]);
 
     ui->tWConsole->item(i,   0)->setText(tr("Format"));
     ui->tWConsole->item(i++, 1)->setText(format == STRFMT_RTCM2 ? tr("RTCM 2") : tr("RTCM 3"));
@@ -1970,43 +1989,45 @@ void MonitorDialog::showRtcm()
     ui->tWConsole->item(i++, 1)->setText(tstr);
 
     ui->tWConsole->item(i,   0)->setText(tr("Station ID"));
-    ui->tWConsole->item(i++, 1)->setText(QString::number(rtcm.staid));
+    ui->tWConsole->item(i++, 1)->setText(QString::number(rtcm->staid));
 
     ui->tWConsole->item(i,   0)->setText(tr("Station Health"));
-    ui->tWConsole->item(i++, 1)->setText(QString::number(rtcm.stah));
+    ui->tWConsole->item(i++, 1)->setText(QString::number(rtcm->stah));
 
     ui->tWConsole->item(i,   0)->setText(tr("Sequence No"));
-    ui->tWConsole->item(i++, 1)->setText(QString::number(rtcm.seqno));
+    ui->tWConsole->item(i++, 1)->setText(QString::number(rtcm->seqno));
 
     ui->tWConsole->item(i,   0)->setText(tr("RTCM Special Message"));
-    ui->tWConsole->item(i++, 1)->setText(rtcm.msg);
+    ui->tWConsole->item(i++, 1)->setText(rtcm->msg);
 
     ui->tWConsole->item(i,   0)->setText(tr("Last Message"));
-    ui->tWConsole->item(i++, 1)->setText(rtcm.msgtype);
+    ui->tWConsole->item(i++, 1)->setText(rtcm->msgtype);
 
     ui->tWConsole->item(i,   0)->setText(tr("# of RTCM Messages"));
     ui->tWConsole->item(i++, 1)->setText(format == STRFMT_RTCM2 ? mstr1 : mstr2);
 
     ui->tWConsole->item(i,   0)->setText(tr("MSM Signals for GPS"));
-    ui->tWConsole->item(i++, 1)->setText(rtcm.msmtype[0]);
+    ui->tWConsole->item(i++, 1)->setText(rtcm->msmtype[0]);
 
     ui->tWConsole->item(i,   0)->setText(tr("MSM Signals for GLONASS"));
-    ui->tWConsole->item(i++, 1)->setText(rtcm.msmtype[1]);
+    ui->tWConsole->item(i++, 1)->setText(rtcm->msmtype[1]);
 
     ui->tWConsole->item(i,   0)->setText(tr("MSM Signals for Galileo"));
-    ui->tWConsole->item(i++, 1)->setText(rtcm.msmtype[2]);
+    ui->tWConsole->item(i++, 1)->setText(rtcm->msmtype[2]);
 
     ui->tWConsole->item(i,   0)->setText(tr("MSM Signals for QZSS"));
-    ui->tWConsole->item(i++, 1)->setText(rtcm.msmtype[3]);
+    ui->tWConsole->item(i++, 1)->setText(rtcm->msmtype[3]);
 
     ui->tWConsole->item(i,   0)->setText(tr("MSM Signals for SBAS"));
-    ui->tWConsole->item(i++, 1)->setText(rtcm.msmtype[4]);
+    ui->tWConsole->item(i++, 1)->setText(rtcm->msmtype[4]);
 
     ui->tWConsole->item(i,   0)->setText(tr("MSM Signals for BDS"));
-    ui->tWConsole->item(i++, 1)->setText(rtcm.msmtype[5]);
+    ui->tWConsole->item(i++, 1)->setText(rtcm->msmtype[5]);
 
     ui->tWConsole->item(i,   0)->setText(tr("MSM Signals for NavIC"));
-    ui->tWConsole->item(i++, 1)->setText(rtcm.msmtype[6]);
+    ui->tWConsole->item(i++, 1)->setText(rtcm->msmtype[6]);
+
+    free(rtcm);
 }
 //---------------------------------------------------------------------------
 void MonitorDialog::setRtcmDgps()
@@ -2063,7 +2084,7 @@ void MonitorDialog::setRtcmSsr()
     header	<< tr("SAT") << tr("Status") << tr("UDI (s)") << tr("UDHR (s)") << tr("IOD") << tr("URA") << tr("Datum") << tr("T0")
             << tr("D0-A (m)") << tr("D0-C (m)") << tr("D0-R (m)") << tr("D1-A (mm/s)") << tr("D1-C (mm/s)") << tr("D1-R (mm/s)")
             << tr("C0 (m)") << tr("C1 (mm/s)") << tr("C2 (mm/s²)") << tr("C-HR (m)") << tr("Code Bias (m)") << tr("Phase Bias (m)");
-    int i, width[] = { 46, 60, 70, 90, 30, 25, 70, 115, 90, 90, 90, 120, 120, 120, 90, 120, 120, 120, 200, 200 };
+    int i, width[] = { 46, 60, 70, 90, 30, 25, 70, 115, 90, 90, 90, 120, 120, 120, 90, 120, 120, 120, 400, 400 };
 
     ui->tWConsole->setColumnCount(20);
     ui->tWConsole->setRowCount(0);
@@ -2089,6 +2110,10 @@ void MonitorDialog::showRtcmSsr()
     time = rtksvr->rtk.sol.time;
     for (i = n = 0; i < MAXSAT; i++) {
         if (!(satsys(i + 1, NULL) & sys)) continue;
+        bool valid = rtksvr->rtcm[effectiveStream].ssr[i].t0[0].time &&
+            fabs(timediff(time, rtksvr->rtcm[effectiveStream].ssr[i].t0[0])) <= 1800.0 &&
+            rtksvr->rtcm[effectiveStream].ssr[i].iode >= 0;
+        if (ui->cBSelectSatellites->currentIndex() && !valid) continue;
         ssr[n] = rtksvr->rtcm[effectiveStream].ssr[i];
         sat[n++] = i + 1;
     }
@@ -2109,7 +2134,9 @@ void MonitorDialog::showRtcmSsr()
         ui->tWConsole->item(i, j++)->setText(valid ? tr("OK") : tr("-"));
         ui->tWConsole->item(i, j++)->setText(QString::number(ssr[i].udi[0], 'f', 0));
         ui->tWConsole->item(i, j++)->setText(QString::number(ssr[i].udi[2], 'f', 0));
-        ui->tWConsole->item(i, j++)->setText(QString::number(ssr[i].iode));
+        if (ssr[i].iode < 0) s = "-";
+        else s = QString::number(ssr[i].iode);
+        ui->tWConsole->item(i, j++)->setText(s);
         ui->tWConsole->item(i, j++)->setText(QString::number(ssr[i].ura));
         ui->tWConsole->item(i, j++)->setText(QString::number(ssr[i].refd));
         if (ssr[i].t0[0].time) time2str(ssr[i].t0[0], tstr, 0); else strcpy(tstr, "-");

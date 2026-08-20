@@ -75,7 +75,7 @@ static const char *help[]={
 " -x level  debug trace level (0:off) [0]",
 " --rover list rover names for processing, separated by a space",
 " --base list  base names for processing, separated by a space",
-" --version display release version",
+" --version display release version"
 };
 /* show message --------------------------------------------------------------*/
 extern int showmsg(const char *format, ...)
@@ -193,7 +193,7 @@ int main(int argc, char **argv)
         else if (n<MAXFILE) infile[n++]=argv[i];
     }
     if (!prcopt.navsys) {
-        prcopt.navsys=SYS_GPS|SYS_GLO;
+        prcopt.navsys=SYS_GPS|SYS_GLO|SYS_GAL|SYS_CMP;
     }
     if (n<=0) {
         showmsg("error : no input file");
