@@ -822,3 +822,70 @@ typedef struct {        /* GIS type */
 } gis_t;
 
 typedef void fatalfunc_t(const char *); /* fatal callback function type */
+
+/* FGO support: double-difference residual evaluation ------------------------
+ *
+ * ddres_core() (src/rtkpos.c) is the re-entrant core extracted from ddres().
+ * It computes the double-differenced residuals, their Jacobian and their
+ * covariance for an arbitrary state vector, without touching rtk_t.  That is
+ * what lets a GTSAM factor re-evaluate the observation model at every
+ * linearisation point while RTKLIB remains the single source of truth for the
+ * model (plan.md 3.4, invariant I3).
+ *
+ * ddres() itself is now a thin wrapper that fills a context, calls the core,
+ * and applies the results to rtk_t.  Its behaviour is unchanged.
+ */
+
+#define DDRES_MAXBLK (6*NFREQ*2)  /* systems x (phase,code) x frequencies */
+#define DDRES_MAXREJ (MAXOBS*NFREQ*2)
+                            /* upper bound on rejections in one call: at most
+                               one per candidate double difference, and the
+                               number of common satellites cannot exceed the
+                               per-epoch observation limit */
+
+typedef struct {        /* DD residual evaluation context (read-only inputs) */
+    const prcopt_t *opt;    /* processing options */
+    const obsd_t *obs;      /* observation data */
+    const ssat_t *ssat;     /* satellite status (read only) */
+    const double *rb;       /* base station position (ecef) (m) */
+    gtime_t soltime;        /* solution time (for prectrop) */
+    double dt;              /* time difference between rover and base (s) */
+    const double *y;        /* undifferenced residuals */
+    const double *e;        /* line-of-sight unit vectors */
+    const double *azel;     /* azimuth/elevation angles (rad) */
+    const double *freq;     /* carrier frequencies (Hz) */
+    const int *sat;         /* satellite numbers */
+    const int *iu;          /* rover observation index */
+    const int *ir;          /* base observation index */
+    int ns;                 /* number of common satellites */
+    int nx;                 /* number of states (H row stride) */
+    const int *frozen_ref;  /* frozen reference satellites, indexed by
+                               m*(NFREQ*2)+f, value = index into sat[], or -1.
+                               NULL selects them dynamically, which is what the
+                               EKF path does.  Freezing keeps a factor's
+                               dimension and meaning stable across the
+                               iterations of one epoch (plan.md 4.2.1) */
+} ddres_ctx_t;
+
+typedef struct {        /* rejected double difference (for diagnostics) */
+    int16_t sat_i;      /* reference satellite number */
+    int16_t sat_j;      /* other satellite number */
+    uint8_t frq;        /* frequency index */
+    uint8_t code;       /* 0:carrier phase, 1:pseudorange */
+    double v;           /* residual that exceeded the threshold (m) */
+} ddres_rej_t;
+
+typedef struct {        /* outputs ddres() used to write straight into rtk_t */
+    double resp[MAXSAT][NFREQ];  /* pseudorange residual (m) */
+    double resc[MAXSAT][NFREQ];  /* carrier phase residual (m) */
+    uint8_t vsat[MAXSAT][NFREQ]; /* valid satellite flag */
+    uint8_t vset[MAXSAT][NFREQ]; /* whether vsat was assigned at all; vsat is
+                                    not cleared by ddres(), so only assigned
+                                    entries may be copied back */
+    uint8_t rejc[MAXSAT][NFREQ]; /* rejection count INCREMENTS, not totals */
+    int ref[DDRES_MAXBLK];       /* reference satellite chosen per block, as an
+                                    index into sat[]; feed back as
+                                    ddres_ctx_t::frozen_ref to freeze them */
+    ddres_rej_t rej[DDRES_MAXREJ]; /* rejections, in the order they occurred */
+    int nrej;                    /* number of entries in rej[] */
+} ddres_stat_t;

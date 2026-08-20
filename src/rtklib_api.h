@@ -501,6 +501,15 @@ EXPORT double rtk_varerr(int sat, int sys, double el, double snr_rover,
                          const prcopt_t *opt, const obsd_t *obs);
 EXPORT void   rtk_ddcov(const int *nb, int n, const double *Ri,
                         const double *Rj, int nv, double *R);
+/* Re-entrant core of ddres(): computes the double-differenced residuals v,
+   their Jacobian H and their covariance R for an arbitrary state x, writing
+   nothing to rtk_t.  Side effects the original produced are returned in *st
+   for the caller to apply.  Set ctx->frozen_ref to hold the reference
+   satellites fixed across the iterations of one epoch.  Returns the number
+   of double differences.                                                    */
+EXPORT int    ddres_core(const ddres_ctx_t *ctx, const double *x,
+                         const double *P, double *v, double *H, double *R,
+                         int *vflg, ddres_stat_t *st);
 
 /* precise point positioning -------------------------------------------------*/
 EXPORT void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);
