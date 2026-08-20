@@ -13,6 +13,12 @@ set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 build=${1:-$here/gtsam_smoke/build}
 
+# Any metadata still lying around describes an older run.  Drop it before doing
+# anything else, so that a failure anywhere below cannot leave a stale
+# fgo_toolchain.txt that a later baseline workflow would mistake for current.
+meta=$build/fgo_toolchain.txt
+rm -f "$meta"
+
 prefix=${FGO_ENV_PREFIX:-${CONDA_PREFIX:-$HOME/miniconda3/envs/rtklib-fgo}}
 cc=${FGO_CC:-/usr/bin/gcc}
 cxx=${FGO_CXX:-/usr/bin/g++}
@@ -33,12 +39,6 @@ ldlibs=${FGO_LDLIBS:--lm}
 # CMake would fold into the build.  fgo-toolchain.cmake scrubs them too, but
 # doing it here as well keeps any non-CMake step in this script honest.
 unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
-
-# Any metadata still lying around describes an older run.  Drop it before doing
-# anything else, so that a failure anywhere below cannot leave a stale
-# fgo_toolchain.txt that a later baseline workflow would mistake for current.
-meta=$build/fgo_toolchain.txt
-rm -f "$meta"
 
 echo "== toolchain =="
 echo "  env prefix : $prefix"
