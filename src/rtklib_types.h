@@ -837,11 +837,12 @@ typedef void fatalfunc_t(const char *); /* fatal callback function type */
  */
 
 #define DDRES_MAXBLK (6*NFREQ*2)  /* systems x (phase,code) x frequencies */
-#define DDRES_MAXREJ (MAXOBS*NFREQ*2)
-                            /* upper bound on rejections in one call: at most
-                               one per candidate double difference, and the
-                               number of common satellites cannot exceed the
-                               per-epoch observation limit */
+#define DDRES_MAXROW (MAXOBS*NFREQ*2+2)
+                            /* upper bound on double differences in one call:
+                               one per candidate plus the baseline constraint.
+                               The number of common satellites cannot exceed
+                               the per-epoch observation limit */
+#define DDRES_MAXREJ DDRES_MAXROW
 
 typedef struct {        /* DD residual evaluation context (read-only inputs) */
     const prcopt_t *opt;    /* processing options */
@@ -864,7 +865,24 @@ typedef struct {        /* DD residual evaluation context (read-only inputs) */
                                NULL selects them dynamically, which is what the
                                EKF path does.  Freezing keeps a factor's
                                dimension and meaning stable across the
-                               iterations of one epoch (plan.md 4.2.1) */
+                               iterations of one epoch (plan.md 4.2.1).
+
+                               Freezing also suppresses the maxinno rejection,
+                               which is the only row filter that depends on x:
+                               dropping a row when the residual happens to
+                               cross the threshold would change the number of
+                               rows between linearisations and defeat the
+                               purpose.  Such rows are still emitted, and
+                               flagged in ddres_stat_t::rowrej so the caller
+                               can down-weight them -- which is what plan.md
+                               5.5.5 asks for, hard thresholds relaxed and
+                               fine-grained weighting left to the robust
+                               kernel */
+    double *ws;             /* optional caller-owned scratch of at least
+                               ddres_ws_size(ns,NF(opt)) doubles.  NULL makes
+                               the core allocate and free internally, which is
+                               fine for the EKF path but not for an optimiser
+                               that re-linearises constantly (plan.md 7.2) */
 } ddres_ctx_t;
 
 typedef struct {        /* rejected double difference (for diagnostics) */
@@ -888,4 +906,9 @@ typedef struct {        /* outputs ddres() used to write straight into rtk_t */
                                     ddres_ctx_t::frozen_ref to freeze them */
     ddres_rej_t rej[DDRES_MAXREJ]; /* rejections, in the order they occurred */
     int nrej;                    /* number of entries in rej[] */
+    uint8_t rowrej[DDRES_MAXROW]; /* per emitted row: nonzero when the residual
+                                    exceeded maxinno.  Only ever set in frozen
+                                    mode, where such rows are emitted rather
+                                    than dropped; in dynamic mode they are
+                                    dropped and this stays clear */
 } ddres_stat_t;

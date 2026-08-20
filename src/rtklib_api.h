@@ -510,6 +510,9 @@ EXPORT void   rtk_ddcov(const int *nb, int n, const double *Ri,
 EXPORT int    ddres_core(const ddres_ctx_t *ctx, const double *x,
                          const double *P, double *v, double *H, double *R,
                          int *vflg, ddres_stat_t *st);
+/* doubles of scratch ddres_core() needs for ns satellites and nf frequencies,
+   for callers that supply ddres_ctx_t::ws instead of allocating per call.    */
+EXPORT int    ddres_ws_size(int ns, int nf);
 
 /* precise point positioning -------------------------------------------------*/
 EXPORT void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);

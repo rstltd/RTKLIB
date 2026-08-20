@@ -1271,7 +1271,7 @@ EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x, const double *P,
     double *tropr,*tropu,*dtdxr,*dtdxu,*Ri,*Rj,freqi,freqj,*Hi=NULL,df;
     double refvar,minvar;
     int i,j,k,m,f,nv=0,nb[NFREQ*NSYS*2+2]={0},b=0,sysi,sysj,nf=NF(opt);
-    int frq,code;
+    int frq,code,owns_ws;
 
     trace(3,"ddres   : dt=%.4f ns=%d\n",dt,ns);
 
@@ -1280,8 +1280,20 @@ EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x, const double *P,
     /* translate ecef pos to geodetic pos */
     ecef2pos(x,posu); ecef2pos(ctx->rb,posr);
 
-    Ri=mat(ns*nf*2+2,1); Rj=mat(ns*nf*2+2,1); im=mat(ns,1);
-    tropu=mat(ns,1); tropr=mat(ns,1); dtdxu=mat(ns,3); dtdxr=mat(ns,3);
+    /* scratch: carved from the caller's workspace when one is supplied, so an
+       optimiser re-linearising thousands of times does not churn the heap
+       (plan.md 7.2).  The EKF path passes NULL and allocates as before. */
+    if (ctx->ws) {
+        double *w=ctx->ws;
+        Ri=w; w+=ns*nf*2+2; Rj=w; w+=ns*nf*2+2; im=w; w+=ns;
+        tropu=w; w+=ns; tropr=w; w+=ns; dtdxu=w; w+=ns*3; dtdxr=w;
+        owns_ws=0;
+    }
+    else {
+        Ri=mat(ns*nf*2+2,1); Rj=mat(ns*nf*2+2,1); im=mat(ns,1);
+        tropu=mat(ns,1); tropr=mat(ns,1); dtdxu=mat(ns,3); dtdxr=mat(ns,3);
+        owns_ws=1;
+    }
 
     /* residuals, valid flags and rejection counts start clean; the caller
        decides which of them to apply.  ddres() used to zero rtk->ssat[].resp
@@ -1314,6 +1326,7 @@ EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x, const double *P,
                    factor keeps its dimension and meaning across the
                    iterations of one epoch (plan.md 4.2.1) */
                 i=ctx->frozen_ref[blk];
+                if (i>=ns) i=-1;      /* stale table; treat block as empty */
             }
             else {
             /* first choose minimum variance satellite without a slip */
@@ -1476,7 +1489,10 @@ EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x, const double *P,
                         rj->frq=(uint8_t)frq; rj->code=(uint8_t)(code?1:0);
                         rj->v=v[nv];
                     }
-                    continue;
+                    if (!ctx->frozen_ref) continue;
+                    /* frozen: keep the row so the number of rows stays
+                       independent of x, and let the caller down-weight it */
+                    if (nv<DDRES_MAXROW) st->rowrej[nv]=1;
                 }
 
                 /* single-differenced measurement error variances (m) */
@@ -1541,10 +1557,16 @@ EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x, const double *P,
     /* double-differenced measurement error covariance */
     ddcov(nb,b,Ri,Rj,nv,R);
 
-    free(Ri); free(Rj); free(im);
-    free(tropu); free(tropr); free(dtdxu); free(dtdxr);
-
+    if (owns_ws) {
+        free(Ri); free(Rj); free(im);
+        free(tropu); free(tropr); free(dtdxu); free(dtdxr);
+    }
     return nv;
+}
+/* scratch required by ddres_core() for ns satellites and nf frequencies ----*/
+EXPORT int ddres_ws_size(int ns, int nf)
+{
+    return 2*(ns*nf*2+2)+9*ns;   /* Ri,Rj + im,tropu,tropr + dtdxu,dtdxr */
 }
 /* double-differenced residuals and partial derivatives -----------------------
  * thin wrapper preserving the original signature and behaviour: it builds the
@@ -1567,12 +1589,16 @@ static int ddres(rtk_t *rtk, const obsd_t *obs, double dt, const double *x,
         trace(1,"ddres : memory allocation error\n");
         return 0;
     }
+    /* zero first: any field added to ddres_ctx_t later then defaults to
+       NULL/0 rather than to whatever was on the stack */
+    memset(&ctx,0,sizeof(ctx));
     ctx.opt=&rtk->opt; ctx.obs=obs; ctx.ssat=rtk->ssat; ctx.rb=rtk->rb;
     ctx.soltime=rtk->sol.time; ctx.dt=dt;
     ctx.y=y; ctx.e=e; ctx.azel=azel; ctx.freq=freq;
     ctx.sat=sat; ctx.iu=iu; ctx.ir=ir;
     ctx.ns=ns; ctx.nx=rtk->nx;
     ctx.frozen_ref=NULL;   /* the EKF path selects references dynamically */
+    ctx.ws=NULL;           /* and allocates its own scratch */
 
     nv=ddres_core(&ctx,x,P,v,H,R,vflg,st);
 
