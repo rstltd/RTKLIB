@@ -72,7 +72,24 @@ endif()
 # On ELF platforms a SHARED library is a LIBRARY artifact, not a RUNTIME one,
 # so the RUNTIME-only form installed nothing at all outside Windows -- and a
 # SONAME that never reaches an installed file is no protection.
+#
+# The unversioned librtklib.so symlink is split into the Development
+# component.  It exists only so that `-lrtklib` can find the library at link
+# time; a runtime install has no use for it, and shipping it lets an
+# executable whose DT_NEEDED is the bare "librtklib.so" -- which is what the
+# linker recorded before this library had a SONAME -- resolve to an ABI it was
+# not built against.  The loader matches DT_NEEDED by filename and never
+# checks the target's SONAME, so this cannot be prevented outright for
+# binaries that were already linked; keeping the bare name out of runtime
+# packages is the part that is actually in our control.  See docs/fgo/abi.md.
+#
+# RUNTIME stays at "lib" rather than moving to CMAKE_INSTALL_BINDIR: that is
+# the Windows DLL path and changing it is not part of this work.
 install(TARGETS rtklib
         RUNTIME DESTINATION lib
-        LIBRARY DESTINATION lib
-        ARCHIVE DESTINATION lib)
+                COMPONENT Runtime
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+                COMPONENT Runtime
+                NAMELINK_COMPONENT Development
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+                COMPONENT Development)
