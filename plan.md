@@ -2184,18 +2184,21 @@ set(CMAKE_C_FLAGS "-Wno-unused-but-set-variable ...")   # <- 注意：此行覆�
 
 ### 強制關卡 G1 — Byte-Diff 回歸（每個 PR）
 
+**已實作**：`test/regression/run_regression.sh`（見 `test/regression/README.md`）。
+
 ```bash
-# 對 N 個代表性資料集，比對改動前後的解算輸出
-for ds in test/data/regression/*; do
-    rnx2rtkp -k "$ds/opt.conf" -o out_new.pos "$ds"/*.obs "$ds"/*.nav
-    cmp out_new.pos "$ds/baseline.pos"  || fail
-    # 同時比對 solution status 輸出（更敏感，會捕捉到 residual 的微小差異）
-    rnx2rtkp -k "$ds/opt.conf" -x 2 -o out_new2.pos "$ds"/*.obs "$ds"/*.nav
-    cmp out_new2.stat "$ds/baseline.stat" || fail
-done
+test/regression/run_regression.sh            # 驗證全部資料集
+test/regression/run_regression.sh --update   # 重新產生基準（僅在變更為預期時）
 ```
 
-**注意**：浮點運算對編譯器最佳化等級敏感。建立基準時必須固定 compiler 版本、最佳化等級與 `-ffast-math` 相關 flags（見 §6.9 陷阱 1、2）。基準檔應與 compiler 版本一起記錄。
+**原草案的兩項更正（已驗證）**：
+
+1. **`.stat` 由 `-y` 產生，不是 `-x`**。`rnx2rtkp` 的 `-x <level>` 設定的是 trace 等級，產生 `.trace` 檔；solution status 檔來自 `-y <level>`，且檔名為 `<outfile>.stat`（例如 `-o out.pos -y 2` 產生 `out.pos.stat`）。原草案的 `cmp out_new2.stat` 會比對到不存在的檔案。
+2. **`.pos` 不能直接 `cmp`**。其標頭含輸入檔的**絕對路徑**與程式版本號，兩者皆非數值性質。必須先正規化（路徑取 basename、版本號遮蔽）再比對。特別是 §6.6 M19 會在新增 FGO 欄位的同一個 PR 中提升 `PATCH_LEVEL`，若不遮蔽版本號將使全部基準無故失效。`.stat` 無標頭，可逐位元直接比對。
+
+**敏感度（實測）**：將 `varerr()`（`rtkpos.c`）的回傳值擾動 **1e-12 相對量**，`solution.pos` **完全不變**，但 `solution.stat` 改變並被關卡攔截。這證實了「`.stat` 較敏感」的判斷，也是 M3（`ddres()` 純函式化）所需的驗證強度。
+
+**注意**：浮點運算對編譯器最佳化等級敏感。建立基準時必須固定 compiler 版本、最佳化等級與 `-ffast-math` 相關 flags（見 §6.9 陷阱 1、2）。基準檔應與 compiler 版本一起記錄——`run_regression.sh` 已將其寫入各資料集的 `baseline/metadata.txt`。
 
 ### 強制關卡 G2 — 建置矩陣（CI）
 
