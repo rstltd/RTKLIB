@@ -485,6 +485,23 @@ EXPORT int  rtkopenstat(const char *file, int level);
 EXPORT void rtkclosestat(void);
 EXPORT int  rtkoutstat(rtk_t *rtk, int level, char *buff);
 
+/* FGO support: residual and error-model helpers exported from rtkpos.c -------
+ * Used by src/fgo/ to evaluate the observation model at an arbitrary state,
+ * so that RTKLIB remains the single source of truth for the model while the
+ * graph optimiser owns only the graph (plan.md 3.4, invariant I3).
+ * The rtk_ prefix avoids clashing with the same-named static in pntpos.c and
+ * with host application symbols (plan.md 6.10 RC-4).  Behaviour is identical
+ * to the previously static versions.                                        */
+EXPORT int    rtk_zdres(int base, const obsd_t *obs, int n, const double *rs,
+                        const double *dts, const double *var, const int *svh,
+                        const nav_t *nav, const double *rr, const prcopt_t *opt,
+                        double *y, double *e, double *azel, double *freq);
+EXPORT double rtk_varerr(int sat, int sys, double el, double snr_rover,
+                         double snr_base, double bl, double dt, int f,
+                         const prcopt_t *opt, const obsd_t *obs);
+EXPORT void   rtk_ddcov(const int *nb, int n, const double *Ri,
+                        const double *Rj, int nv, double *R);
+
 /* precise point positioning -------------------------------------------------*/
 EXPORT void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);
 EXPORT int pppnx(const prcopt_t *opt);

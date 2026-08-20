@@ -85,6 +85,24 @@
 #define NR(opt)     (NP(opt)+NI(opt)+NT(opt)+NL(opt))
 #define NX(opt)     (NR(opt)+NB(opt))
 
+/* FGO support: exported residual and error-model helpers ---------------------
+ * src/fgo/ evaluates the observation model by calling back into RTKLIB, so
+ * these three must be visible outside this translation unit.  They are
+ * exported under rtk_-prefixed names because the bare names are too generic
+ * for a shared library: pntpos.c has its own static varerr() with a different
+ * signature, and zdres/ddcov could collide with host application symbols
+ * (plan.md 6.10 RC-4).
+ *
+ * The macros keep every call site and every definition in this file
+ * textually identical to upstream, so future merges of rtkpos.c from
+ * rtklibexplorer/RTKLIB do not conflict on the rename.  Only `static` ->
+ * `EXPORT` on the three definitions actually changes.
+ *
+ * Behaviour is unchanged; this is plan.md 6.1 M2/M4/M5, category T2.        */
+#define zdres       rtk_zdres
+#define varerr      rtk_varerr
+#define ddcov       rtk_ddcov
+
 /* state variable index */
 #define II(s,opt)   (NP(opt)+(s)-1)                 /* ionos (s:satellite no) */
 #define IT(r,opt)   (NP(opt)+NI(opt)+NT(opt)/2*(r)) /* tropos (r:0=rov,1:ref) */
@@ -403,7 +421,7 @@ static double gfobs(const obsd_t *obs, int i, int j, int k, const nav_t *nav)
     return L1*CLIGHT/freq1-L2*CLIGHT/freq2;
 }
 /* single-differenced measurement error variance -----------------------------*/
-static double varerr(int sat, int sys, double el, double snr_rover, double snr_base,
+EXPORT double varerr(int sat, int sys, double el, double snr_rover, double snr_base,
                      double bl, double dt, int f, const prcopt_t *opt, const obsd_t *obs)
 {
     (void)sat;
@@ -1046,7 +1064,7 @@ static void zdres_sat(int base, double r, const obsd_t *obs, const nav_t *nav,
         O   y[(0:1)+i*2] = zero diff residuals {phase,code} (m)
         O   e    = line of sight unit vectors to sats
         O   azel = [az, el] to sats                                           */
-static int zdres(int base, const obsd_t *obs, int n, const double *rs,
+EXPORT int zdres(int base, const obsd_t *obs, int n, const double *rs,
                  const double *dts, const double *var, const int *svh,
                  const nav_t *nav, const double *rr, const prcopt_t *opt,
                  double *y, double *e, double *azel, double *freq)
@@ -1125,7 +1143,7 @@ static int validobs(int i, int j, int f, int nf, double *y)
 *   Rj[nv]: variances of 2nd sats in double diff pairs
 *   nv:     total # of sat pairs
 *   R[nv][nv]:  double diff measurement err covariance matrix       */
-static void ddcov(const int *nb, int n, const double *Ri, const double *Rj,
+EXPORT void ddcov(const int *nb, int n, const double *Ri, const double *Rj,
                   int nv, double *R)
 {
     int i,j,k=0,b;
