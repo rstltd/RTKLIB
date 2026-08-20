@@ -18,6 +18,11 @@ cc=${FGO_CC:-/usr/bin/gcc}
 cxx=${FGO_CXX:-/usr/bin/g++}
 cmake_bin=${FGO_CMAKE:-$prefix/bin/cmake}
 
+# The no-LAPACK configuration of the console-app makefiles defaults to
+# `-lgfortran -lm` even though gfortran is unused, which fails to link on hosts
+# without it.  See docs/fgo/build_environment.md.
+ldlibs=${FGO_LDLIBS:--lm}
+
 [ -x "$cmake_bin" ] || {
     echo "verify_env.sh: cmake not found at $cmake_bin" >&2
     echo "               run tools/fgo/setup_env.sh first" >&2
@@ -83,13 +88,27 @@ meta=$build/fgo_toolchain.txt
                            tr ' ' '\n' | grep -xE 'avx2|avx512f|bmi2|fma' |
                            tr '\n' ' ')"
 
-    echo "# --- effective build flags ---"
+    # The byte-diff baseline of plan.md 6.11 G1 is produced by the rnx2rtkp
+    # console app, which is a plain make build with its own CFLAGS -- not by
+    # the CMake project below.  Its flags are what actually govern the EKF
+    # numbers, so they are recorded first.  `make -n -B` prints the commands
+    # without building anything.
+    echo "# --- reference C build (app/consapp/rnx2rtkp/gcc) ---"
+    ref_dir=$here/../../app/consapp/rnx2rtkp/gcc
+    if [ -f "$ref_dir/makefile" ]; then
+        echo "c-build-cmd  : make -B CC=$cc LDLIBS=\"$ldlibs\""
+        make -n -B -C "$ref_dir" CC="$cc" LDLIBS="$ldlibs" 2>/dev/null |
+            grep -E -- '-c .*src/rtkpos\.c|-o rnx2rtkp' |
+            sed -e '1s/^/  cc-line    : /' -e '2s/^/  link-line  : /'
+    else
+        echo "(rnx2rtkp makefile not found at $ref_dir)"
+    fi
+
+    echo "# --- C++ probe build flags (this build) ---"
     if [ -f "$build/CMakeCache.txt" ]; then
         grep -E '^CMAKE_(C|CXX)_FLAGS(_RELEASE)?:|^CMAKE_EXE_LINKER_FLAGS:|^CMAKE_BUILD_TYPE:' \
             "$build/CMakeCache.txt" || true
     fi
-
-    echo "# --- effective compile line ---"
     if [ -f "$build/compile_commands.json" ]; then
         sed -n 's/.*"command": "\(.*\)".*/\1/p' \
             "$build/compile_commands.json" | head -1

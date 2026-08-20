@@ -21,10 +21,16 @@ GTSAM capability the design depends on, and writes the toolchain metadata that
 must accompany any regression baseline. Both scripts are safe to run from an
 activated conda shell — inherited build flags are scrubbed (see below).
 
-The metadata records tool versions, the CPU feature level, the *effective*
-compiler and linker flags, and the full compile line. Versions alone would be
-inadequate: two builds differing only in optimisation or floating-point flags
-would produce identical version metadata while producing different numbers.
+The metadata records tool versions, the CPU feature level, and the *effective*
+compile and link lines. Versions alone would be inadequate: two builds
+differing only in optimisation or floating-point flags would produce identical
+version metadata while producing different numbers.
+
+Two builds are recorded separately, because they are genuinely different
+builds. The byte-diff baseline of gate G1 comes from the `rnx2rtkp` console
+app, a plain `make` build with its own `CFLAGS` — those are the flags that
+govern the EKF numbers. The CMake flags below them describe only the C++
+capability probe.
 
 ## What is pinned, and by what
 
@@ -48,11 +54,19 @@ dependency solving, conda will install those binaries on an older CPU without
 complaint and the failure appears much later as an illegal instruction —
 `setup_env.sh` therefore checks the CPU before doing anything.
 
-On a host below v3, re-solve rather than restore:
+`setup_env.sh` reads the required level out of the lock itself rather than
+assuming it, so the check tracks whatever the lock currently demands. On a host
+below that level, re-solve rather than restore:
 
 ```sh
 tools/fgo/setup_env.sh --resolve
 ```
+
+`--resolve` deliberately solves against `x86_64_v3` (override with
+`FGO_ARCHSPEC`), not against whatever the host happens to be. Re-solving on a
+v4 machine would otherwise bake a v4 requirement back into the lock and quietly
+make it unusable on v3 hardware. When the host is below the requested level,
+the host's own level is used instead and the reduced portability is announced.
 
 ### Compiler version
 
