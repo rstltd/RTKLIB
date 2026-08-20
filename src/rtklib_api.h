@@ -523,11 +523,34 @@ EXPORT int    ddres_ws_size(int ns, int nf);
  * rtk_t state.  The spp_ prefix keeps these distinct from the rtk_ helpers
  * above, which have different signatures (plan.md 6.10 RC-4).
  *
- * spp_nx() gives the column count of the H matrices spp_rescode() and
- * spp_resdop() fill, and the dimension of the x they read.  The layout is
- * x[0..2] receiver position (ECEF, m), x[3] GPS receiver clock bias (m), then
- * one inter-system time offset per additional constellation.                */
+ * The two functions solve DIFFERENT problems with DIFFERENT state vectors and
+ * Jacobian strides.  Do not share a size between them.
+ *
+ *   spp_rescode()  x has spp_nx() elements: x[0..2] receiver position (ECEF,
+ *                  m), x[3] GPS receiver clock bias (m), then one inter-system
+ *                  time offset per additional constellation.  H rows have
+ *                  spp_nx() columns.
+ *
+ *                  It writes MORE rows than there are observations: after the
+ *                  per-observation residuals it appends a rank-deficiency
+ *                  constraint row for every constellation clock offset no
+ *                  observation activated.  One GPS observation already yields
+ *                  six rows.  Size v, var and the rows of H by
+ *                  spp_rescode_nvmax(n), never by n.  azel (2 per obs), vsat
+ *                  and resp are written only for the first min(n,MAXOBS)
+ *                  observations.
+ *
+ *   spp_resdop()   x has spp_nx_dop() elements, currently 4: x[0..2] receiver
+ *                  VELOCITY (ECEF, m/s) and x[3] receiver clock DRIFT (m/s).
+ *                  H rows have spp_nx_dop() columns.  It returns at most
+ *                  min(n,MAXOBS) rows and appends no constraints.
+ *
+ * Both counts are functions rather than macros because NX depends on QZSDT,
+ * which is defined inside pntpos.c: a header macro could silently disagree
+ * with the library that was actually built.                                 */
 EXPORT int    spp_nx(void);
+EXPORT int    spp_rescode_nvmax(int n);
+EXPORT int    spp_nx_dop(void);
 EXPORT double spp_varerr(const prcopt_t *opt, const obsd_t *obs, double el,
                          int sys);
 EXPORT int    spp_rescode(int iter, const obsd_t *obs, int n, const double *rs,

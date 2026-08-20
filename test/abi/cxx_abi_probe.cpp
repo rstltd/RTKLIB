@@ -139,14 +139,24 @@ static void probe_spp_varerr(void)
     check("spp_varerr matches closed form", std::fabs(got - want) < 1e-15, d);
 }
 
-/* spp_nx(): must agree with the H matrices spp_rescode() actually writes --- */
-static void probe_spp_nx(void)
+/* the two state contracts must stay distinct ------------------------------- */
+static void probe_spp_sizes(void)
 {
-    const int nx = spp_nx();
-    char d[64];
-    snprintf(d, sizeof d, "nx=%d", nx);
-    /* 3 position + 1 clock, plus one offset per extra constellation */
-    check("spp_nx is a sane state count", nx >= 4 && nx <= 16, d);
+    const int nx = spp_nx(), nxd = spp_nx_dop();
+    char d[96];
+
+    snprintf(d, sizeof d, "nx=%d nx_dop=%d", nx, nxd);
+    /* rescode: 3 position + 1 clock, plus one offset per extra constellation.
+       resdop: 3 velocity + 1 clock drift, and nothing else -- conflating the
+       two would mis-stride every Jacobian row after the first. */
+    check("spp state counts are distinct and sane",
+          nx >= 4 && nx <= 16 && nxd == 4, d);
+
+    /* the row bound must exceed n whenever any clock offset is unused */
+    const int nvmax = spp_rescode_nvmax(1);
+    snprintf(d, sizeof d, "nvmax(1)=%d nx=%d", nvmax, nx);
+    check("spp_rescode_nvmax accounts for constraint rows",
+          nvmax == 1 + nx - 3, d);
 }
 
 /* spp_rescode(): a real call on a synthetic single-satellite fixture ------- */
@@ -177,8 +187,10 @@ static void probe_spp_rescode(void)
     std::vector<double> x(nx, 0.0);
     x[0] = 6378137.0;                  /* receiver on the equator */
 
-    std::vector<double> v(nx + 4, 0.0), H((nx + 4) * nx, 0.0),
-                        var(nx + 4, 0.0), azel(2, 0.0), resp(1, 0.0);
+    /* size the outputs by the published bound, not by the observation count */
+    const int nvmax = spp_rescode_nvmax(1);
+    std::vector<double> v(nvmax, 0.0), H((size_t)nvmax * nx, 0.0),
+                        var(nvmax, 0.0), azel(2, 0.0), resp(1, 0.0);
     int vsat[1] = {0}, ns = 0;
 
     const int nv = spp_rescode(0, &obs, 1, rs, dts, vare, svh, &nav,
@@ -187,16 +199,21 @@ static void probe_spp_rescode(void)
 
     /* one satellite must be accepted, and its position partials must be the
        negated line-of-sight unit vector with a 1 in the clock column        */
-    bool ok = (nv >= 1) && (ns == 1) && (vsat[0] == 1);
+    /* the returned row count must respect the published bound, and it must
+       genuinely exceed the observation count here -- that is the whole point
+       of publishing spp_rescode_nvmax() */
+    bool ok = (nv >= 1) && (nv <= nvmax) && (nv > 1) && (ns == 1) &&
+              (vsat[0] == 1);
     if (ok) {
         const double nrm = std::sqrt(H[0] * H[0] + H[1] * H[1] + H[2] * H[2]);
         ok = std::fabs(nrm - 1.0) < 1e-9 && std::fabs(H[3] - 1.0) < 1e-12;
     }
-    char d[128];
-    snprintf(d, sizeof d, "nv=%d ns=%d |H_pos|=%.9f H_clk=%.3f",
-             nv, ns, ok ? std::sqrt(H[0]*H[0]+H[1]*H[1]+H[2]*H[2]) : 0.0,
+    char d[160];
+    snprintf(d, sizeof d, "nv=%d (n=1, bound=%d) ns=%d |H_pos|=%.9f H_clk=%.3f",
+             nv, nvmax, ns,
+             nv >= 1 ? std::sqrt(H[0]*H[0]+H[1]*H[1]+H[2]*H[2]) : 0.0,
              nv >= 1 ? H[3] : 0.0);
-    check("spp_rescode evaluates a real fixture", ok, d);
+    check("spp_rescode respects its row bound", ok, d);
 }
 
 int main(void)
@@ -206,7 +223,7 @@ int main(void)
     probe_linkage();
     probe_ddcov_structure();
     probe_spp_varerr();
-    probe_spp_nx();
+    probe_spp_sizes();
     probe_spp_rescode();
 
     if (nfail) {

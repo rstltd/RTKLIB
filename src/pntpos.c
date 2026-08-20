@@ -56,6 +56,7 @@
 #define rescode     spp_rescode
 #define resdop      spp_resdop
 
+#define NXDOP       4           /* # of states resdop() estimates (vel+drift) */
 #define MAXITR      10          /* max number of iteration for point pos */
 #define ERR_ION     5.0         /* ionospheric delay Std (m) */
 #define ERR_TROP    3.0         /* tropspheric delay Std (m) */
@@ -400,6 +401,25 @@ EXPORT int spp_nx(void)
 {
     return NX;
 }
+/* upper bound on the rows rescode() writes for n observations ---------------
+ * Not simply n: after the per-observation residuals it appends one
+ * rank-deficiency constraint row for every constellation clock offset that no
+ * observation activated.  A caller sizing v, var and the rows of H by n alone
+ * would overrun them -- one GPS observation already yields six rows.
+ *---------------------------------------------------------------------------*/
+EXPORT int spp_rescode_nvmax(int n)
+{
+    return (n<MAXOBS?n:MAXOBS)+NX-3;
+}
+/* number of states resdop() estimates ---------------------------------------
+ * Deliberately separate from spp_nx(): resdop() solves a different problem
+ * with a different state vector -- x[0..2] receiver VELOCITY (m/s) and x[3]
+ * receiver clock DRIFT (m/s) -- and packs H with this stride, not spp_nx().
+ *---------------------------------------------------------------------------*/
+EXPORT int spp_nx_dop(void)
+{
+    return NXDOP;
+}
 /* validate solution ---------------------------------------------------------*/
 static int valsol(const double *azel, const int *vsat, int n,
                   const prcopt_t *opt, const double *v, int nv, int nx,
@@ -620,8 +640,8 @@ EXPORT int resdop(const obsd_t *obs, int n, const double *rs, const double *dts,
         v[nv]=(-obs[i].D[0]*CLIGHT/freq-(rate+x[3]-CLIGHT*dts[1+i*2]))/sig;
         
         /* design matrix */
-        for (j=0;j<4;j++) {
-            H[j+nv*4]=((j<3)?-e[j]:1.0)/sig;
+        for (j=0;j<NXDOP;j++) {
+            H[j+nv*NXDOP]=((j<3)?-e[j]:1.0)/sig;
         }
         nv++;
     }
