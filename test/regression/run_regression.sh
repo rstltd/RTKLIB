@@ -43,7 +43,12 @@ for a in "$@"; do
     esac
 done
 
-[ -n "$datasets" ] || datasets=$(cd "$ds_dir" && ls -d */ 2>/dev/null | tr -d /)
+if [ -n "$datasets" ]; then
+    named=1
+else
+    named=0
+    datasets=$(cd "$ds_dir" && ls -d */ 2>/dev/null | tr -d /)
+fi
 
 if [ "$mode" = list ]; then
     for d in $datasets; do
@@ -100,16 +105,31 @@ field() {
 # The .stat file has no header at all and is compared byte for byte untouched.
 # It is the sensitive one: it carries per-satellite residuals, so it catches
 # differences long before they are visible in the position solution.
+# The emitted line is `% program   : RTKLIB ver.EX 2.5.1`, i.e. the library
+# name and version, not the tool name -- matching on "rnx2rtkp" would silently
+# mask nothing.  Everything after "ver." goes, so a PATCH_LEVEL bump cannot
+# fail the gate; the program name itself is kept.
 normalize_pos() {
     sed -e 's|^\(% inp file  : \).*/|\1|' \
-        -e 's|^\(% program   : rnx2rtkp ver\.\).*|\1<masked>|'
+        -e 's|^\(% program  *: .* ver\.\).*|\1<masked>|'
 }
 
 fail=0
 pass=0
 for d in $datasets; do
     conf=$ds_dir/$d/dataset.conf
-    [ -f "$conf" ] || { echo "SKIP $d (no dataset.conf)"; continue; }
+    # A dataset named on the command line must exist: silently skipping a
+    # typo would let CI report success having tested nothing.  A dataset
+    # merely present in the tree may legitimately have no config yet.
+    [ -f "$conf" ] || {
+        if [ "$named" = 1 ]; then
+            echo "FAIL $d (no such dataset)"
+            fail=$((fail+1))
+        else
+            echo "SKIP $d (no dataset.conf)"
+        fi
+        continue
+    }
 
     rover=$(field "$conf" rover)
     base=$(field "$conf" base)
@@ -164,9 +184,18 @@ for d in $datasets; do
             # Untracked files count too -- a stray .c in src/ changes the build.
             echo "git-dirty   : $(test -n "$(git -C "$RTKLIB_ROOT" status --porcelain -- src app 2>/dev/null)" && echo YES || echo no)"
             echo "rnx2rtkp    : $("$bin" --version 2>&1 | head -1)"
-            echo "cc          : $cc"
-            echo "cc-version  : $("$cc" --version | head -1)"
-            echo "ldlibs      : $ldlibs"
+            if [ -n "${FGO_RNX2RTKP:-}" ]; then
+                # The binary was supplied, not built here, so the compiler and
+                # flags that produced it are unknown -- recording $cc would be
+                # a false reproducibility claim.
+                echo "cc          : (prebuilt binary supplied via FGO_RNX2RTKP)"
+                echo "cc-version  : unknown"
+                echo "ldlibs      : unknown"
+            else
+                echo "cc          : $cc"
+                echo "cc-version  : $("$cc" --version | head -1)"
+                echo "ldlibs      : $ldlibs"
+            fi
             echo "uname       : $(uname -srm)"
             echo "epochs      : $(grep -vc '^%' "$bdir/solution.pos")"
             echo "stat-lines  : $(wc -l < "$bdir/solution.stat" | tr -d ' ')"

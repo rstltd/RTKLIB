@@ -44,6 +44,10 @@ bumps `PATCH_LEVEL` in the same PR that adds the FGO option fields, and that
 must not invalidate every baseline for a reason unrelated to the solution. The
 version actually used is recorded in `baseline/metadata.txt` instead.
 
+The header line is `% program   : RTKLIB ver.EX 2.5.1` — the *library* name,
+not the tool name. Masking is verified by bumping `PATCH_LEVEL` and confirming
+the gate still passes.
+
 `.stat` has no header at all and is therefore compared untouched.
 
 > Note: plan.md §6.11 G1 sketches this gate using `-x 2` and comparing
@@ -108,4 +112,13 @@ nav   = ${FGO_DATA_ROOT}/bridge-site-a/brdc.nav
 Only the config and the baselines are committed; the observation data stays
 outside the repository. Datasets whose files are absent are reported as `SKIP`
 rather than failing, so a checkout without `$FGO_DATA_ROOT` still runs the
-in-repo dataset.
+in-repo dataset. A dataset named explicitly on the command line is different:
+if it does not exist the run fails, so a typo in CI cannot pass by testing
+nothing.
+
+## Baselines are stored verbatim
+
+`test/regression/.gitattributes` marks the baselines `-text`. The repository
+root sets `* text=auto`, which rewrites the CRLF line endings `.pos` uses; a
+normalised baseline can never match the program's real output. See that file
+for the byte counts observed before the rule existed.
