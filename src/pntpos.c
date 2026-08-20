@@ -409,7 +409,11 @@ EXPORT int spp_nx(void)
  *---------------------------------------------------------------------------*/
 EXPORT int spp_rescode_nvmax(int n)
 {
-    return (n<MAXOBS?n:MAXOBS)+NX-3;
+    /* clamp low as well as high: with n<=0 rescode() skips the observation
+       loop but still appends its constraint rows, so a negative n must not
+       shrink the bound below them */
+    if (n<0) n=0; else if (n>MAXOBS) n=MAXOBS;
+    return n+NX-3;
 }
 /* number of states resdop() estimates ---------------------------------------
  * Deliberately separate from spp_nx(): resdop() solves a different problem

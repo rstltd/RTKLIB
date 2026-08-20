@@ -152,11 +152,17 @@ static void probe_spp_sizes(void)
     check("spp state counts are distinct and sane",
           nx >= 4 && nx <= 16 && nxd == 4, d);
 
-    /* the row bound must exceed n whenever any clock offset is unused */
+    /* the row bound must exceed n whenever any clock offset is unused, and it
+       must never fall below the constraint rows alone -- rescode() writes
+       those even when it processes no observations at all */
     const int nvmax = spp_rescode_nvmax(1);
-    snprintf(d, sizeof d, "nvmax(1)=%d nx=%d", nvmax, nx);
-    check("spp_rescode_nvmax accounts for constraint rows",
-          nvmax == 1 + nx - 3, d);
+    const int nv0 = spp_rescode_nvmax(0), nvneg = spp_rescode_nvmax(-1);
+    const int nvbig = spp_rescode_nvmax(MAXOBS * 4);
+    snprintf(d, sizeof d, "nvmax(1)=%d (0)=%d (-1)=%d (huge)=%d nx=%d",
+             nvmax, nv0, nvneg, nvbig, nx);
+    check("spp_rescode_nvmax bounds every input",
+          nvmax == 1 + nx - 3 && nv0 == nx - 3 && nvneg == nx - 3 &&
+          nvbig == MAXOBS + nx - 3, d);
 }
 
 /* spp_rescode(): a real call on a synthetic single-satellite fixture ------- */
