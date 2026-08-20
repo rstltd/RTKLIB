@@ -1,0 +1,12 @@
+# The baselines are compared byte for byte against what rnx2rtkp actually
+# writes, and .pos uses CRLF line endings.  The repository root sets
+# `* text=auto`, which normalises those CRLFs to LF on commit -- a fresh clone
+# would then hold a baseline that differs from the program's real output and
+# the G1 gate would fail for a reason that has nothing to do with the code.
+#
+# Observed before this rule existed: solution.pos was stored as 15824 bytes
+# instead of 15941, with 117 CR bytes silently removed.
+#
+# Store them exactly as generated.
+datasets/**/baseline/solution.pos  -text
+datasets/**/baseline/solution.stat -text
