@@ -15,6 +15,26 @@ command -v conda >/dev/null 2>&1 || {
     exit 1
 }
 
+# ---- CPU preflight -----------------------------------------------------------
+# The SuiteSparse libraries GTSAM links declare `_x86_64-microarch-level >=3`,
+# i.e. x86-64-v3 (AVX2 + FMA + BMI2, Haswell 2013 and later).  Restoring an
+# @EXPLICIT lock bypasses dependency solving, so conda will happily install
+# those binaries on an older CPU and the failure surfaces much later as an
+# illegal instruction.  Check up front instead.
+if [ -r /proc/cpuinfo ]; then
+    missing=
+    for f in avx2 bmi2 fma; do
+        grep -m1 '^flags' /proc/cpuinfo | grep -qw "$f" || missing="$missing $f"
+    done
+    if [ -n "$missing" ]; then
+        echo "setup_env.sh: this CPU lacks$missing" >&2
+        echo "              the locked SuiteSparse/GTSAM builds require" >&2
+        echo "              x86-64-v3; re-solve on this host with:" >&2
+        echo "                  $0 --resolve" >&2
+        exit 1
+    fi
+fi
+
 if [ "${1:-}" = "--resolve" ]; then
     echo "re-solving $env_name from environment.yml ..."
     conda env remove -y -n "$env_name" >/dev/null 2>&1 || true
@@ -22,6 +42,11 @@ if [ "${1:-}" = "--resolve" ]; then
     echo "relocking to conda-linux-64.lock ..."
     conda list -n "$env_name" --explicit > "$here/conda-linux-64.lock"
 else
+    # `conda create --file <lock>` against an existing prefix installs the
+    # locked packages but does not unlink anything already there, so the result
+    # would not be the locked package set.  Start from nothing.
+    echo "removing any existing $env_name ..."
+    conda env remove -y -n "$env_name" >/dev/null 2>&1 || true
     echo "creating $env_name from conda-linux-64.lock ..."
     conda create -y -n "$env_name" --file "$here/conda-linux-64.lock"
 fi

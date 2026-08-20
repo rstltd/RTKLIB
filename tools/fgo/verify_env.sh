@@ -24,6 +24,11 @@ cmake_bin=${FGO_CMAKE:-$prefix/bin/cmake}
     exit 1
 }
 
+# An activated conda environment exports CFLAGS/CXXFLAGS/CPPFLAGS/LDFLAGS that
+# CMake would fold into the build.  fgo-toolchain.cmake scrubs them too, but
+# doing it here as well keeps any non-CMake step in this script honest.
+unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+
 echo "== toolchain =="
 echo "  env prefix : $prefix"
 echo "  cc         : $cc"
@@ -31,16 +36,35 @@ echo "  cxx        : $cxx"
 echo "  cmake      : $cmake_bin"
 echo
 
+# ---- drop a stale cache whose toolchain inputs no longer match --------------
+# CMake caches the compilers, GTSAM_DIR and linker flags on first configure and
+# will not revisit them.  Reusing such a cache after changing FGO_CC/FGO_CXX/
+# FGO_ENV_PREFIX would test the old toolchain while the metadata below records
+# the new one -- exactly the silent mismatch this file exists to prevent.
+stamp_want="$cc|$cxx|$prefix|$cmake_bin"
+stamp_file=$build/fgo_toolchain.stamp
+if [ -f "$stamp_file" ] && [ "$(cat "$stamp_file")" != "$stamp_want" ]; then
+    echo "toolchain inputs changed since the last run; reconfiguring from scratch"
+    rm -rf "$build"
+elif [ -d "$build" ] && [ ! -f "$stamp_file" ]; then
+    rm -rf "$build"
+fi
+
 FGO_ENV_PREFIX=$prefix FGO_CC=$cc FGO_CXX=$cxx \
     "$cmake_bin" -S "$here/gtsam_smoke" -B "$build" -G Ninja \
         --toolchain "$here/fgo-toolchain.cmake" \
         -DCMAKE_BUILD_TYPE=Release >/dev/null
 "$cmake_bin" --build "$build" >/dev/null
+mkdir -p "$build" && printf '%s' "$stamp_want" > "$stamp_file"
 
 echo "== capability probe =="
 "$build/gtsam_smoke"
 
 # ---- record what actually got used (plan.md 11.1 P1.3) ----------------------
+# Versions alone are not enough: two builds differing only in optimisation or
+# floating-point flags would produce identical metadata while producing
+# different numbers.  The effective flags and the full compile line are
+# therefore recorded as well.
 meta=$build/fgo_toolchain.txt
 {
     echo "# RTKLIB FGO toolchain metadata"
@@ -54,6 +78,25 @@ meta=$build/fgo_toolchain.txt
     echo "cmake        : $("$cmake_bin" --version | head -1)"
     echo "uname        : $(uname -srm)"
     echo "libc         : $(ldd --version 2>/dev/null | head -1)"
+    echo "cpu-flags    : $(awk '/^flags/{ $1=""; $2=""; print; exit }' \
+                            /proc/cpuinfo 2>/dev/null |
+                           tr ' ' '\n' | grep -xE 'avx2|avx512f|bmi2|fma' |
+                           tr '\n' ' ')"
+
+    echo "# --- effective build flags ---"
+    if [ -f "$build/CMakeCache.txt" ]; then
+        grep -E '^CMAKE_(C|CXX)_FLAGS(_RELEASE)?:|^CMAKE_EXE_LINKER_FLAGS:|^CMAKE_BUILD_TYPE:' \
+            "$build/CMakeCache.txt" || true
+    fi
+
+    echo "# --- effective compile line ---"
+    if [ -f "$build/compile_commands.json" ]; then
+        sed -n 's/.*"command": "\(.*\)".*/\1/p' \
+            "$build/compile_commands.json" | head -1
+    else
+        echo "(compile_commands.json not generated)"
+    fi
+
     echo "# --- conda packages ---"
     conda list -p "$prefix" 2>/dev/null |
         grep -E '^(gtsam|eigen|libboost-devel|tbb|libstdcxx|metis|cmake|ninja|python|numpy) ' ||

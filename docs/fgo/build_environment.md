@@ -18,7 +18,13 @@ FGO_ENV_PREFIX=$(conda run -n rtklib-fgo printenv CONDA_PREFIX) \
 
 `verify_env.sh` builds and runs `tools/fgo/gtsam_smoke`, which probes every
 GTSAM capability the design depends on, and writes the toolchain metadata that
-must accompany any regression baseline.
+must accompany any regression baseline. Both scripts are safe to run from an
+activated conda shell — inherited build flags are scrubbed (see below).
+
+The metadata records tool versions, the CPU feature level, the *effective*
+compiler and linker flags, and the full compile line. Versions alone would be
+inadequate: two builds differing only in optimisation or floating-point flags
+would produce identical version metadata while producing different numbers.
 
 ## What is pinned, and by what
 
@@ -32,6 +38,30 @@ must accompany any regression baseline.
 plan.md §11.2 P2.1 suggests a Docker image. A conda environment plus an
 explicit lock file gives the same version pinning without requiring a container
 runtime; the lock can be baked into a Dockerfile later unchanged.
+
+### Host requirements
+
+**CPU: x86-64-v3 or newer** (AVX2 + FMA + BMI2; Intel Haswell / AMD Excavator,
+2013 onward). The SuiteSparse libraries GTSAM links declare
+`_x86_64-microarch-level >=3`. Because restoring an `@EXPLICIT` lock bypasses
+dependency solving, conda will install those binaries on an older CPU without
+complaint and the failure appears much later as an illegal instruction —
+`setup_env.sh` therefore checks the CPU before doing anything.
+
+On a host below v3, re-solve rather than restore:
+
+```sh
+tools/fgo/setup_env.sh --resolve
+```
+
+### Compiler version
+
+The toolchain warns when `/usr/bin/gcc` is not the expected version (12.2.0 by
+default, override with `FGO_EXPECT_GCC`). It is a warning rather than an error
+because only the C byte-diff baseline needs bit-exactness — `src/fgo/` itself
+builds on any C++17 compiler — and hard-failing would block FGO work on any
+machine whose distro ships something else. When regenerating or comparing
+baselines, where a mismatch really is fatal, set `FGO_STRICT_TOOLCHAIN=1`.
 
 ## Resolved versions
 
@@ -119,6 +149,34 @@ make CC=/usr/bin/gcc LDLIBS="-lm"
 
 This is an upstream quirk, not something to "fix" casually — see plan.md §6.9
 trap 2 on not mixing build-configuration changes into the FGO work.
+
+### An activated conda shell silently injects build flags
+
+This one was live, not hypothetical: on the development host the base
+miniconda environment is active by default and exports
+
+```
+CFLAGS=-march=nocona -mtune=haswell -ftree-vectorize -fPIC ... -O2
+       -isystem /home/…/miniconda3/include
+CXXFLAGS=…same plus -fvisibility-inlines-hidden…
+CPPFLAGS=-DNDEBUG -D_FORTIFY_SOURCE=2 -O2 -isystem /home/…/miniconda3/include
+LDFLAGS=… -Wl,-rpath,/home/…/miniconda3/lib -L/home/…/miniconda3/lib
+```
+
+CMake seeds `CMAKE_<LANG>_FLAGS` and `CMAKE_EXE_LINKER_FLAGS` from exactly
+these four variables. The first version of the probe was therefore built with
+`-march=nocona -mtune=haswell -O2` and headers and RPATHs from the *base*
+environment, despite nominally using a pinned system compiler and a pinned
+conda prefix — and it would have been built differently by anyone who had not
+run `conda activate`.
+
+That is precisely the class of drift plan.md §6.9 warns about: an optimisation
+level and a floating-point code-generation target changing underneath a
+baseline that is supposed to be byte-reproducible.
+
+`fgo-toolchain.cmake` now clears all four variables and says so when it does.
+The clearing lives in the toolchain file rather than in `verify_env.sh` so that
+every consumer is protected, including the future `src/fgo/` build.
 
 ### conda's compiler shadows the system compiler
 
