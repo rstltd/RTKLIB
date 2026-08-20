@@ -1,2 +1,5 @@
+# Build output.  The SOVERSION added with ABI 1 (see docs/fgo/abi.md) makes
+# CMake emit librtklib.so.1 and librtklib.so.1.0.0 alongside the bare name,
+# which the previous exact-match pattern did not cover.
 libRTKLib.so*
-librtklib.so
+librtklib.so*

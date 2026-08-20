@@ -24,12 +24,37 @@ It is deliberately separate from `PATCH_LEVEL`:
 | Macro | Moves when | Reaches the SONAME |
 |---|---|---|
 | `PATCH_LEVEL` | any release | no |
-| `VER_RTKLIB_ABI` | a struct crossing the library boundary changes layout | yes |
+| `VER_RTKLIB_ABI` | the library stops being binary-compatible | yes |
 
-**Bump `VER_RTKLIB_ABI` on any change to the layout of a public struct** —
-`prcopt_t`, `rtk_t`, `sol_t`, `nav_t`, `obsd_t`, `ssat_t` and friends —
-including merely appending a field. Bumping `PATCH_LEVEL` instead documents
-the break without preventing it.
+**Bump `VER_RTKLIB_ABI` for any change that makes an already-linked
+executable unsafe against the new library.** Bumping `PATCH_LEVEL` instead
+documents the break without preventing it.
+
+Struct layout is only one way to break it. All of these require a bump:
+
+- **A public struct changes layout** — `prcopt_t`, `rtk_t`, `sol_t`, `nav_t`,
+  `obsd_t`, `ssat_t` and friends. Appending a field counts: callers allocate
+  these, so `sizeof()` is part of the contract. *(This is what ABI 1 is.)*
+- **An exported function's signature changes** — parameters added, removed,
+  reordered or retyped, or a return type changed. The caller pushes the old
+  argument list and the callee reads the new one. `ddres_core()` gaining its
+  `ws` parameter during development is exactly this shape of change.
+- **An exported symbol is removed or renamed**, including a function that
+  becomes `static`. Old binaries fail to resolve it, or silently bind to
+  something else.
+- **The meaning of an argument or return value changes** without its type
+  changing — units, sign convention, ownership of a pointer, error-code
+  values. The linker cannot see this one at all, which makes it the easiest
+  to miss and the worst to debug.
+- **A public macro that callers compile into their own code changes value** —
+  array bounds such as `MAXSAT` or `NFREQ`, or enum-like `#define` constants.
+  The caller baked the old value into its own allocations.
+
+Adding a *new* exported function, or a new `#define`, does not require a bump:
+existing binaries neither reference nor depend on it.
+
+When in doubt, bump. The cost of an unnecessary bump is a rebuild; the cost of
+a missed one is memory corruption in the field.
 
 ## What the SONAME does and does not protect
 
