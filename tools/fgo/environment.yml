@@ -1,0 +1,25 @@
+# Conda environment for the RTKLIB Factor Graph Optimization extension.
+#
+# This file is the readable specification.  For a bit-for-bit reproducible
+# environment use the solved lock instead:
+#
+#     conda create -n rtklib-fgo --file tools/fgo/conda-linux-64.lock
+#
+# See docs/fgo/build_environment.md for why each pin is what it is.
+name: rtklib-fgo
+channels:
+  - conda-forge
+dependencies:
+  # --- FGO backend (plan.md 3.5 / D2: GTSAM 4.2+) ---------------------------
+  - gtsam=4.2.2
+  - eigen
+  - libboost-devel        # NOT boost-cpp: see docs/fgo/build_environment.md
+  - tbb-devel             # gtsam/base/types.h includes <tbb/scalable_allocator.h>
+
+  # --- build tooling --------------------------------------------------------
+  - cmake
+  - ninja
+
+  # --- Phase 2 offline prototyping and dump tooling (plan.md 11.2) ----------
+  - python=3.11
+  - numpy
