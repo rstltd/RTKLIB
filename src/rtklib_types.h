@@ -878,12 +878,13 @@ typedef struct {        /* DD residual evaluation context (read-only inputs) */
                                5.5.5 asks for, hard thresholds relaxed and
                                fine-grained weighting left to the robust
                                kernel */
-    double *ws;             /* optional caller-owned scratch of at least
-                               ddres_ws_size(ns,NF(opt)) doubles.  NULL makes
-                               the core allocate and free internally, which is
-                               fine for the EKF path but not for an optimiser
-                               that re-linearises constantly (plan.md 7.2) */
 } ddres_ctx_t;
+/* Scratch is deliberately NOT a field here but an explicit argument of
+   ddres_core(): an optional pointer inside a struct has to be initialised by
+   every caller, and a caller that does not know about it writes through stack
+   garbage.  As an argument the compiler forces the choice to be made.
+   Use ddres_ctx_init() to start from a zeroed context so that the same hazard
+   does not arise for frozen_ref or for fields added later.                  */
 
 typedef struct {        /* rejected double difference (for diagnostics) */
     int16_t sat_i;      /* reference satellite number */

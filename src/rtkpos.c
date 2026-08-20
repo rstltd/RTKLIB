@@ -1256,8 +1256,13 @@ static int test_sys(int sys, int m)
         O H = linearized translation from innovations to states (az/el to sats)
         O R = measurement error covariances
         O vflg = bit encoded list of sats used for each double diff  */
+EXPORT void ddres_ctx_init(ddres_ctx_t *ctx)
+{
+    memset(ctx,0,sizeof(*ctx));
+}
+/* double-differenced residuals, Jacobian and covariance at an arbitrary state */
 EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x, const double *P,
-                      double *v, double *H, double *R, int *vflg,
+                      double *ws, double *v, double *H, double *R, int *vflg,
                       ddres_stat_t *st)
 {
     const prcopt_t *opt=ctx->opt;
@@ -1283,8 +1288,8 @@ EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x, const double *P,
     /* scratch: carved from the caller's workspace when one is supplied, so an
        optimiser re-linearising thousands of times does not churn the heap
        (plan.md 7.2).  The EKF path passes NULL and allocates as before. */
-    if (ctx->ws) {
-        double *w=ctx->ws;
+    if (ws) {
+        double *w=ws;
         Ri=w; w+=ns*nf*2+2; Rj=w; w+=ns*nf*2+2; im=w; w+=ns;
         tropu=w; w+=ns; tropr=w; w+=ns; dtdxu=w; w+=ns*3; dtdxr=w;
         owns_ws=0;
@@ -1591,16 +1596,17 @@ static int ddres(rtk_t *rtk, const obsd_t *obs, double dt, const double *x,
     }
     /* zero first: any field added to ddres_ctx_t later then defaults to
        NULL/0 rather than to whatever was on the stack */
-    memset(&ctx,0,sizeof(ctx));
+    ddres_ctx_init(&ctx);
     ctx.opt=&rtk->opt; ctx.obs=obs; ctx.ssat=rtk->ssat; ctx.rb=rtk->rb;
     ctx.soltime=rtk->sol.time; ctx.dt=dt;
     ctx.y=y; ctx.e=e; ctx.azel=azel; ctx.freq=freq;
     ctx.sat=sat; ctx.iu=iu; ctx.ir=ir;
     ctx.ns=ns; ctx.nx=rtk->nx;
     ctx.frozen_ref=NULL;   /* the EKF path selects references dynamically */
-    ctx.ws=NULL;           /* and allocates its own scratch */
 
-    nv=ddres_core(&ctx,x,P,v,H,R,vflg,st);
+    /* NULL scratch: the EKF calls this a few times per epoch, so the internal
+       allocation is irrelevant here.  An optimiser passes its own. */
+    nv=ddres_core(&ctx,x,P,NULL,v,H,R,vflg,st);
 
     /* apply the side effects the original had */
     for (i=0;i<MAXSAT;i++) for (j=0;j<NFREQ;j++) {
