@@ -24,13 +24,25 @@ command -v conda >/dev/null 2>&1 || {
 # ---- host microarchitecture level ---------------------------------------------
 # conda-forge splits x86-64 into feature levels; the SuiteSparse libraries GTSAM
 # links declare a minimum.  Determine what this host can actually run.
+# The complete feature set of each level matters: a VM that exposes avx2 but
+# masks, say, f16c would be misread as v3 and allowed to install binaries it
+# cannot execute, which is the failure this check exists to prevent.
+LEVEL2='cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3'
+LEVEL3='avx avx2 bmi1 bmi2 f16c fma abm movbe xsave'
+LEVEL4='avx512f avx512bw avx512cd avx512dq avx512vl'
+
 host_level=1
 if [ -r /proc/cpuinfo ]; then
-    f=$(grep -m1 '^flags' /proc/cpuinfo)
-    has() { echo "$f" | grep -qw "$1"; }
-    has sse4_2 && has popcnt                       && host_level=2
-    [ "$host_level" -ge 2 ] && has avx2 && has bmi2 && has fma && host_level=3
-    [ "$host_level" -ge 3 ] && has avx512f          && host_level=4
+    cpuflags=$(grep -m1 '^flags' /proc/cpuinfo)
+    has_all() {
+        for _f in $1; do
+            echo "$cpuflags" | grep -qw "$_f" || return 1
+        done
+        return 0
+    }
+    has_all "$LEVEL2" && host_level=2
+    [ "$host_level" -ge 2 ] && has_all "$LEVEL3" && host_level=3
+    [ "$host_level" -ge 3 ] && has_all "$LEVEL4" && host_level=4
 fi
 
 if [ "${1:-}" = "--resolve" ]; then

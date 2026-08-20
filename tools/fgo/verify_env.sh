@@ -65,6 +65,38 @@ mkdir -p "$build" && printf '%s' "$stamp_want" > "$stamp_file"
 echo "== capability probe =="
 "$build/gtsam_smoke"
 
+# ---- reference C build configuration ----------------------------------------
+# The byte-diff baseline of plan.md 6.11 G1 is produced by the rnx2rtkp console
+# app: a plain make build with its own CFLAGS, not the CMake project above.
+# Those are the flags that actually govern the EKF numbers, so they must appear
+# in the metadata.  Extract them here rather than inside the metadata block --
+# a failing pipeline there would be masked by the redirection and by the fact
+# that `set -e` only inspects the last command of a pipeline, leaving a
+# successful-looking run with empty metadata.
+ref_dir=$here/../../app/consapp/rnx2rtkp/gcc
+
+command -v make >/dev/null 2>&1 || {
+    echo "verify_env.sh: make not found; cannot record the reference C build" >&2
+    exit 1
+}
+[ -f "$ref_dir/makefile" ] || {
+    echo "verify_env.sh: no makefile at $ref_dir" >&2
+    exit 1
+}
+
+ref_dry=$(make -n -B -C "$ref_dir" CC="$cc" LDLIBS="$ldlibs") || {
+    echo "verify_env.sh: 'make -n -B' failed in $ref_dir" >&2
+    exit 1
+}
+ref_cc_line=$(printf '%s\n' "$ref_dry" | grep -E -- '-c .*src/rtkpos\.c' | head -1)
+ref_link_line=$(printf '%s\n' "$ref_dry" | grep -E -- '-o rnx2rtkp$' | head -1)
+
+[ -n "$ref_cc_line" ] && [ -n "$ref_link_line" ] || {
+    echo "verify_env.sh: could not extract the reference C build lines" >&2
+    echo "               (makefile layout changed?)" >&2
+    exit 1
+}
+
 # ---- record what actually got used (plan.md 11.1 P1.3) ----------------------
 # Versions alone are not enough: two builds differing only in optimisation or
 # floating-point flags would produce identical metadata while producing
@@ -88,21 +120,10 @@ meta=$build/fgo_toolchain.txt
                            tr ' ' '\n' | grep -xE 'avx2|avx512f|bmi2|fma' |
                            tr '\n' ' ')"
 
-    # The byte-diff baseline of plan.md 6.11 G1 is produced by the rnx2rtkp
-    # console app, which is a plain make build with its own CFLAGS -- not by
-    # the CMake project below.  Its flags are what actually govern the EKF
-    # numbers, so they are recorded first.  `make -n -B` prints the commands
-    # without building anything.
     echo "# --- reference C build (app/consapp/rnx2rtkp/gcc) ---"
-    ref_dir=$here/../../app/consapp/rnx2rtkp/gcc
-    if [ -f "$ref_dir/makefile" ]; then
-        echo "c-build-cmd  : make -B CC=$cc LDLIBS=\"$ldlibs\""
-        make -n -B -C "$ref_dir" CC="$cc" LDLIBS="$ldlibs" 2>/dev/null |
-            grep -E -- '-c .*src/rtkpos\.c|-o rnx2rtkp' |
-            sed -e '1s/^/  cc-line    : /' -e '2s/^/  link-line  : /'
-    else
-        echo "(rnx2rtkp makefile not found at $ref_dir)"
-    fi
+    echo "c-build-cmd  : make -B CC=$cc LDLIBS=\"$ldlibs\""
+    echo "  cc-line    : $ref_cc_line"
+    echo "  link-line  : $ref_link_line"
 
     echo "# --- C++ probe build flags (this build) ---"
     if [ -f "$build/CMakeCache.txt" ]; then
