@@ -516,6 +516,31 @@ EXPORT int    ddres_core(const ddres_ctx_t *ctx, const double *x,
    hot path allocation-free, or NULL to let it allocate per call.             */
 EXPORT int    ddres_ws_size(int ns, int nf);
 
+/* FGO support: residual and error-model helpers exported from pntpos.c ------
+ * Used by the undifferenced pseudorange and Doppler factors (plan.md 4.2.2,
+ * 4.2.5).  rescode() is already a pure function of its arguments: every
+ * output goes through a caller-provided array, and it reads no file-scope or
+ * rtk_t state.  The spp_ prefix keeps these distinct from the rtk_ helpers
+ * above, which have different signatures (plan.md 6.10 RC-4).
+ *
+ * spp_nx() gives the column count of the H matrices spp_rescode() and
+ * spp_resdop() fill, and the dimension of the x they read.  The layout is
+ * x[0..2] receiver position (ECEF, m), x[3] GPS receiver clock bias (m), then
+ * one inter-system time offset per additional constellation.                */
+EXPORT int    spp_nx(void);
+EXPORT double spp_varerr(const prcopt_t *opt, const obsd_t *obs, double el,
+                         int sys);
+EXPORT int    spp_rescode(int iter, const obsd_t *obs, int n, const double *rs,
+                          const double *dts, const double *vare,
+                          const int *svh, const nav_t *nav, const double *x,
+                          const prcopt_t *opt, double *v, double *H,
+                          double *var, double *azel, int *vsat, double *resp,
+                          int *ns);
+EXPORT int    spp_resdop(const obsd_t *obs, int n, const double *rs,
+                         const double *dts, const nav_t *nav, const double *rr,
+                         const double *x, const double *azel, const int *vsat,
+                         double err, double *v, double *H);
+
 /* precise point positioning -------------------------------------------------*/
 EXPORT void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);
 EXPORT int pppnx(const prcopt_t *opt);

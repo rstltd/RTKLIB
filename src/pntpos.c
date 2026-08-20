@@ -37,6 +37,25 @@
 #else
 #define NX          (4+4)       /* # of estimated parameters */
 #endif
+/* FGO support: exported residual and error-model helpers ---------------------
+ * The undifferenced pseudorange and Doppler factors of plan.md 4.2.2 and
+ * 4.2.5 evaluate their observation model by calling back into these, so that
+ * src/fgo/ never reimplements the model (invariant I3).
+ *
+ * Exported under spp_-prefixed names: rtkpos.c already exports a different
+ * rtk_varerr() with a different signature, and rescode/resdop are too generic
+ * for a shared library (plan.md 6.10 RC-4).  The macros keep every call site
+ * and definition in this file textually identical to upstream, so future
+ * merges of pntpos.c do not conflict on the rename.
+ *
+ * Behaviour is unchanged; this is plan.md 6.3 M10/M11/M12, category T2.
+ * rescode() was already a pure function of its arguments -- every output goes
+ * through a caller-provided array and it touches no file-scope or rtk_t state
+ * -- so it needs promotion only, not restructuring.                          */
+#define varerr      spp_varerr
+#define rescode     spp_rescode
+#define resdop      spp_resdop
+
 #define MAXITR      10          /* max number of iteration for point pos */
 #define ERR_ION     5.0         /* ionospheric delay Std (m) */
 #define ERR_TROP    3.0         /* tropspheric delay Std (m) */
@@ -48,7 +67,7 @@
 # define MAX_GDOP   30          /* max gdop for valid solution  */
 
 /* pseudorange measurement error variance ------------------------------------*/
-static double varerr(const prcopt_t *opt, const obsd_t *obs, double el, int sys)
+EXPORT double varerr(const prcopt_t *opt, const obsd_t *obs, double el, int sys)
 {
     double fact=1.0,varr;
 
@@ -274,7 +293,7 @@ extern int tropcorr(gtime_t time, const nav_t *nav, const double *pos,
     return 1;
 }
 /* pseudorange residuals -----------------------------------------------------*/
-static int rescode(int iter, const obsd_t *obs, int n, const double *rs,
+EXPORT int rescode(int iter, const obsd_t *obs, int n, const double *rs,
                    const double *dts, const double *vare, const int *svh,
                    const nav_t *nav, const double *x, const prcopt_t *opt,
                    double *v, double *H, double *var,
@@ -366,6 +385,20 @@ static int rescode(int iter, const obsd_t *obs, int n, const double *rs,
         var[nv++]=0.01;
     }
     return nv;
+}
+/* number of states rescode()/resdop() estimate ------------------------------
+ * The H matrices they fill have this many columns.  Exposed as a function
+ * rather than a macro because NX depends on QZSDT, which is defined in this
+ * translation unit: a header macro could silently disagree with the library
+ * that was actually built.
+ *
+ * State layout: x[0..2] receiver position (ECEF, m), x[3] receiver clock bias
+ * for GPS (m), then one inter-system time offset per additional constellation
+ * in the order GLO, GAL, BDS, IRN and, when QZSDT is enabled, QZS.
+ *---------------------------------------------------------------------------*/
+EXPORT int spp_nx(void)
+{
+    return NX;
 }
 /* validate solution ---------------------------------------------------------*/
 static int valsol(const double *azel, const int *vsat, int n,
@@ -546,7 +579,7 @@ static int raim_fde(const obsd_t *obs, int n, const double *rs,
     return stat;
 }
 /* range rate residuals ------------------------------------------------------*/
-static int resdop(const obsd_t *obs, int n, const double *rs, const double *dts,
+EXPORT int resdop(const obsd_t *obs, int n, const double *rs, const double *dts,
                   const nav_t *nav, const double *rr, const double *x,
                   const double *azel, const int *vsat, double err, double *v,
                   double *H)
