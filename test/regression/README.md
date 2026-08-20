@@ -88,11 +88,31 @@ datasets/<name>/
 `$FGO_DATA_ROOT`; nothing else is expanded, so a dataset file cannot execute
 shell code.
 
+### Configurations
+
+The five in-repo datasets share one observation pair and differ only in
+`opt.conf`. That is deliberate: each one drives a different branch of the
+double-difference residual code, which is where the FGO refactoring work
+concentrates. Measured coverage:
+
+| Dataset | Exercises | Evidence |
+|---|---|---|
+| `sample-2005-static` | the common path: static, broadcast iono, Saastamoinen tropo, continuous AR | 112/115 epochs fixed |
+| `sample-2005-est-atmos` | `IONOOPT_EST` and `TROPOPT_ESTG` Jacobian terms, kinematic state vector | 750 `$ION` + 240 `$TROP` records |
+| `sample-2005-baseline-const` | `constbl()`, the baseline-length constraint | constraint applied on 337 epochs |
+| `sample-2005-outliers` | rejection path: `vsat=0`, `rejc++`, `errmsg` | 26 rejections |
+| `sample-2005-iflc` | `IONOOPT_IFLC` phase-bias Jacobian (the `±1` form) | single frequency index in `$SAT` |
+
+**Not reachable with this data**: the GLONASS inter-channel bias branches
+(`GLO_ARMODE_AUTOCAL`, `GLO_ARMODE_FIXHOLD`) and the SBAS branch. The sample is
+GPS-only 2005 data. Covering those needs a multi-constellation dataset under
+`$FGO_DATA_ROOT`, and until one exists those branches rest on review alone.
+
 ### The in-repo dataset is not enough
 
-`sample-2005-static` is the only dataset small enough to live in git: 3.3 km
-baseline, GPS L1/L2, one hour at 30 s, 112 of 115 epochs fixed. It is a fast
-and sharp guard against accidental numerical change, and nothing more.
+The sample observations are the only ones small enough to live in git: 3.3 km
+baseline, GPS L1/L2, one hour at 30 s. They are a fast and sharp guard against
+accidental numerical change, and nothing more.
 
 plan.md §11.1 **P1.1** asks for at least five sets of ≥ 24 h from real
 monitoring stations — open sky, obstructed sky, vegetated slope, urban
