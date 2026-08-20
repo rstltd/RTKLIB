@@ -80,6 +80,20 @@ extern "C" {
 
 #define PATCH_LEVEL "2.5.2"               /* patch level */
 
+/* ABI version of librtklib, used as the ELF SONAME (see src/CMakeLists.txt).
+ *
+ * Bump this on ANY change to the layout of a structure that crosses the
+ * library boundary -- prcopt_t, rtk_t, sol_t, nav_t, obsd_t and friends --
+ * including appending a field, since that changes sizeof().  PATCH_LEVEL is
+ * not a substitute: it does not reach the SONAME, so without this an
+ * application compiled against an older layout would happily load a newer
+ * library and read and write past the end of its own objects (plan.md 6.10
+ * RC-2).
+ *
+ * 1 : first versioned ABI.  prcopt_t gained the fgo_* fields and rtk_t gained
+ *     rtk_t::fgo, so this is not layout-compatible with any earlier build.  */
+#define VER_RTKLIB_ABI "1"
+
 /* --- domain fragments, assembled here in original order (umbrella header).
  *     Split from the historical single-file rtklib.h; behaviour-preserving. --- */
 #include "rtklib_const.h"

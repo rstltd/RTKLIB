@@ -3634,7 +3634,8 @@ GnssInsarTieFactor（把 InSAR 錨定到 GNSS）：
 | `fgo-elwmodel` | enum | `fgo_elwmodel` | `0:rtklib` | `0:rtklib,1:exp,2:sitemap` |
 | `fgo-mp-adaptive` | enum | `fgo_mpadapt` | `0:off` | CMC 自適應加權（§5.4.5） |
 | `fgo-scale-est` | enum | `fgo_scaleest` | `1:on` | MAD 尺度估計（§5.5.6） |
-| `fgo-scale-clamp` | double×2 | `fgo_scaleclamp` | 0.5,5.0 | 尺度上下限 |
+| `fgo-scale-min` | double | `fgo_scaleclamp[0]` | 0.5 | 尺度下限 |
+| `fgo-scale-max` | double | `fgo_scaleclamp[1]` | 5.0 | 尺度上限 |
 | `fgo-maxinno-scale` | double | `fgo_innoscale` | 3.0 | 硬門檻放寬倍數（§5.5.5） |
 | `fgo-tdcp` | enum | `fgo_tdcp` | `1:on` | TDCP factor |
 | `fgo-jerkconst` | enum | `fgo_jerk` | `0:off` | Jerk 平滑（§4.2.6，**謹慎使用**） |
@@ -3645,6 +3646,8 @@ GnssInsarTieFactor（把 InSAR 錨定到 GNSS）：
 | `fgo-siteconst` | string | `fgo_sitefile` | "" | Site constraint 設定檔路徑 |
 | `fgo-insight-out` | string | `fgo_insightfile` | "" | AI Insight NDJSON 輸出路徑 |
 | `fgo-mpmap` | string | `fgo_mpmapfile` | "" | 測站多路徑圖檔路徑（§5.4.3） |
+
+**更正（已驗證）**：原草案的 `fgo-scale-clamp` 型別為「double×2」，但 `options.c` 的 `opt_t` 沒有這種型別——`format=1` 只以 `atof()` 讀取單一 double（`options.c` 的 `str2opt()`）。既有慣例是拆成兩個具名選項：`prcopt_.baseline[2]` 即拆為 `pos2-baselen` / `pos2-basesig`。因此本表改為 `fgo-scale-min` / `fgo-scale-max`。
 
 ## B.2 相關的既有設定項（FGO 會使用，不新增）
 

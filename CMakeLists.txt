@@ -4,10 +4,16 @@ file(READ "src/rtklib.h" ver)
 
 string(REGEX MATCH "VER_RTKLIB[ ]+\"([a-zA-Z0-9]*)\"" _ ${ver})
 set(VERSION ${CMAKE_MATCH_1})
-string(REGEX MATCH "PATCH_LEVEL[ ]+\"([a-zA-Z0-9]*)\"" _ ${ver})
+# PATCH_LEVEL is dotted ("2.5.2"), so the character class must allow '.'.
+# It previously did not, and this matched nothing at all -- the version line
+# below printed "EX-" and PATCH_LEVEL was unusable downstream.
+string(REGEX MATCH "PATCH_LEVEL[ ]+\"([0-9A-Za-z.]*)\"" _ ${ver})
 set(PATCH_LEVEL ${CMAKE_MATCH_1})
 
-message("RTKLIB version: ${VERSION}-${PATCH_LEVEL}")
+string(REGEX MATCH "VER_RTKLIB_ABI[ ]+\"([0-9]+)\"" _ ${ver})
+set(RTKLIB_ABI ${CMAKE_MATCH_1})
+
+message("RTKLIB version: ${VERSION}-${PATCH_LEVEL} (ABI ${RTKLIB_ABI})")
 
 project(rtklib LANGUAGES C CXX VERSION 2.4.3)
 
