@@ -64,7 +64,16 @@ printf '%s\n' "$TESTS" > "$work/list"
 # match nothing literally -- restoring the "0 passed, 0 failed" false green
 # this validation exists to prevent.
 : > "$work/want"
-[ $# -gt 0 ] && printf '%s\n' "$@" > "$work/want"
+for a in "$@"; do
+    # An empty argument -- `run_utests.sh "$NAME"` with NAME unset -- would
+    # otherwise land as a blank line that matches no test, while command
+    # substitution strips it from the mismatch report so validation passes.
+    if [ -z "$a" ]; then
+        echo "run_utests.sh: empty test name" >&2
+        exit 2
+    fi
+    printf '%s\n' "$a" >> "$work/want"
+done
 printf '%s\n' "$TESTS" | cut -d: -f1 > "$work/known"
 
 # Validate before building anything.
@@ -121,5 +130,11 @@ echo
 if [ "$fail" -gt 0 ]; then
     echo "$pass passed, $fail failed:$failed"
     exit 1
+fi
+# Backstop: reporting success having run nothing is never a correct outcome,
+# whatever selection logic let it happen.
+if [ "$pass" -eq 0 ]; then
+    echo "run_utests.sh: no tests ran" >&2
+    exit 2
 fi
 echo "$pass passed, 0 failed"
