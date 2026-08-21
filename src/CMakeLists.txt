@@ -27,20 +27,12 @@ endif()
 # anything under src/fgo/ has to be listed explicitly.
 option(ENABLE_FGO "Build the Factor Graph Optimization solver (requires GTSAM 4.2+)" OFF)
 
-# The C++ backend arrives with plan.md 11.3 PR-6 (work items P3.8-P3.11).
-# Until then this list is empty, and ENABLE_FGO=ON is refused rather than
-# quietly producing a library in which every fgo_* symbol is simply absent.
-set(DIR_SRCS_FGO "")
-
-if(ENABLE_FGO AND NOT DIR_SRCS_FGO)
-    message(FATAL_ERROR
-        "ENABLE_FGO=ON, but the GTSAM backend under src/fgo/ has not landed "
-        "yet (plan.md 11.3 PR-6).\n"
-        "Configure with -DENABLE_FGO=OFF.  The C ABI in "
-        "src/fgo/rtklib_fgo_api.h is already fixed and usable; without the "
-        "backend it resolves to src/fgo/fgo_stub.c, whose entry points return "
-        "FGO_ERR_DISABLED.")
-endif()
+# The C++ backend (plan.md 11.3 PR-6).  fgo_solver.cpp implements the same C
+# ABI that fgo_stub.c provides when this is off, so exactly one of the two is
+# compiled and rtkpos.c never sees the difference.
+set(DIR_SRCS_FGO
+    fgo/fgo_solver.cpp
+)
 
 aux_source_directory(. DIR_SRCS_RTKLIB)
 set(DIR_SRCS_RTKLIB_RCV
@@ -59,7 +51,13 @@ set(DIR_SRCS_RTKLIB_RCV
 )
 if(ENABLE_FGO)
     find_package(GTSAM 4.2 REQUIRED)
-    find_package(Eigen3 3.3 REQUIRED)
+    # No version constraint on Eigen, deliberately.  Eigen3ConfigVersion.cmake
+    # uses same-major-version semantics, so asking for 3.3 REJECTS the 5.x that
+    # conda-forge now ships -- it does not mean "3.3 or newer".  GTSAM's own
+    # config calls plain find_dependency(Eigen3 REQUIRED) for the same reason,
+    # and GTSAM was built against whatever Eigen is present, so agreeing with
+    # it is what actually matters.
+    find_package(Eigen3 REQUIRED)
     list(APPEND DIR_SRCS ${DIR_SRCS_FGO})
     add_definitions(-DENABLE_FGO)
 else()

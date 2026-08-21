@@ -20,8 +20,8 @@
 #
 #   - a second compiler.  Everything here builds with one toolchain, pinned by
 #     FGO_CC/FGO_CXX; the matrix also requires clang.
-#   - ENABLE_FGO=ON.  Refused at configure time until the GTSAM backend lands
-#     (plan.md 11.3 PR-6), so there is nothing to build yet.
+#     The fgo-backend gate covers ENABLE_FGO=ON where GTSAM is installed, and
+#     skips where it is not, so a green run does not imply it was exercised.
 #
 # The closing message says so rather than claiming completeness.
 set -eu
@@ -33,8 +33,9 @@ gate_abi()        { "$here/abi/check_abi.sh"; }
 gate_options()    { "$here/options/check_options.sh"; }
 gate_unit()       { "$here/utest/run_utests.sh"; }
 gate_fgo_abi()    { "$here/fgo/check_fgo_abi.sh"; }
+gate_fgo_backend(){ "$here/fgo/check_fgo_backend.sh"; }
 
-ALL="regression abi options unit fgo-abi"
+ALL="regression abi options unit fgo-abi fgo-backend"
 
 if [ "${1:-}" = "--list" ]; then
     echo "regression  G1  EKF output byte-identical"
@@ -42,6 +43,7 @@ if [ "${1:-}" = "--list" ]; then
     echo "options     G3  config compatibility"
     echo "unit        G4  existing RTKLIB unit tests"
     echo "fgo-abi         FGO C ABI header and stub"
+    echo "fgo-backend     ENABLE_FGO=ON build (skips without GTSAM)"
     exit 0
 fi
 
@@ -56,6 +58,7 @@ for g in $ALL; do
     options)    run=gate_options ;;
     unit)       run=gate_unit ;;
     fgo-abi)    run=gate_fgo_abi ;;
+    fgo-backend) run=gate_fgo_backend ;;
     *)          echo "run_gates.sh: unknown gate '$g'" >&2; exit 2 ;;
     esac
     if $run; then
@@ -75,4 +78,4 @@ echo "all gates passed"
 echo
 echo "not covered here (CI, plan.md 11.1 P1.4):"
 echo "  - a second compiler; this run used a single pinned toolchain"
-echo "  - ENABLE_FGO=ON, refused until the backend lands (plan.md 11.3 PR-6)"
+echo "  - ENABLE_FGO=ON where GTSAM is absent; the fgo-backend gate skips

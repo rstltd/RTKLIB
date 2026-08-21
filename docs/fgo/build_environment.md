@@ -133,13 +133,29 @@ Being in `gtsam_unstable` also means these classes carry no API-stability
 guarantee across GTSAM releases. This sharpens risk **RC-10**: the GTSAM
 version pin is load-bearing, not merely advisory.
 
-### 2. Eigen resolves to 5.0.1, not 3.x
+### 2. `find_package(Eigen3 3.3)` REJECTS the Eigen that is installed
 
-plan.md §6.9 writes `find_package(Eigen3 3.3 REQUIRED)`. conda-forge's current
-`eigen` is 5.0.1 and still exports the CMake package name `Eigen3`, so the
-existing call succeeds — `5.0.1 >= 3.3` in CMake's version comparison. GTSAM
-4.2.2 here is built with `GTSAM_USE_SYSTEM_EIGEN`, so `src/fgo/` and GTSAM
-share one Eigen; no bundled copy is involved.
+plan.md §6.9 writes `find_package(Eigen3 3.3 REQUIRED)`. That does not mean
+"3.3 or newer": `Eigen3ConfigVersion.cmake` uses same-major-version semantics,
+so a request for 3.3 accepts only 3.x. conda-forge now ships Eigen 5.0.1, and
+the call fails outright:
+
+```
+Could not find a configuration file for package "Eigen3" that is compatible
+with requested version "3.3".
+  .../share/eigen3/cmake/Eigen3Config.cmake, version: 5.0.1
+    The version found is not compatible with the version requested.
+```
+
+An earlier revision of this document claimed the opposite — that 5.0.1 would
+satisfy `>= 3.3`. It was written from CMake's usual comparison rules rather
+than from a build, and it was wrong. The constraint is dropped, which is what
+GTSAM's own config does (`find_dependency(Eigen3 REQUIRED)`), and is the right
+answer anyway: GTSAM was compiled against whichever Eigen is present, so
+agreeing with GTSAM is what matters, not a floor of our own.
+
+GTSAM 4.2.2 here is built with `GTSAM_USE_SYSTEM_EIGEN`, so `src/fgo/` and
+GTSAM share one Eigen; no bundled copy is involved.
 
 ### 3. GTSAM 4.2 uses `boost::shared_ptr`
 

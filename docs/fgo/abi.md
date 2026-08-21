@@ -97,6 +97,43 @@ The remaining exposure is a host with the development package installed and a
 stale executable. plan.md §6.10 RC-2 already prescribes the answer:
 **deploy the whole project in sync.**
 
+## Compile-time macros are part of the ABI
+
+`librtklib` is configured entirely by preprocessor macros, and several of them
+size public structures. Anything that links the shared library **must be
+compiled with the same set**, or every field of `rtk_t` moves.
+
+They are set in one place, `add_definitions()` near the top of the repository's
+top-level `CMakeLists.txt`:
+
+```
+-DENAGLO -DENAQZS -DENACMP -DENAGAL -DENAIRN -DNFREQ=3 -DNEXOBS=3
+-DTRACE -DSVR_REUSEADDR
+```
+
+`ENA*` select constellations and so set `MAXSAT`; `NFREQ` and `NEXOBS` size
+`obsd_t` and `ssat_t`; `TRACE` decides whether `trace.c` compiles to anything
+at all, so without it `gettracelevel` and `trace_impl` do not exist.
+
+The failure is quiet. Dropping the `ENA*` macros moves `MAXSAT` from 208 to 71
+and `sizeof(rtk_t)` from 183 KB to 70 KB; a caller then writes `rtk_t` fields
+at offsets the library does not read, and a call like `fgo_init()` can return
+`FGO_OK` while the caller sees `rtk->fgo` as `NULL`. No diagnostic is produced
+at any stage — this cost real debugging time while building the backend gate.
+
+Note that this set differs from the one the console-app makefiles use
+(`NFREQ=4`, `NEXOBS=3`). That is harmless only because those applications
+compile every `src/*.c` themselves and never link the shared library.
+
+`test/fgo/check_fgo_backend.sh` reads the macros out of `CMakeLists.txt`
+rather than repeating them, so its probe cannot drift from the library it
+links. Anything else that links `librtklib` should do the same, or the
+project should eventually move these to
+`target_compile_definitions(rtklib PUBLIC ...)` so that CMake consumers
+inherit them automatically — that is the real fix, and it is a build-system
+change deliberately kept out of the FGO work (plan.md §6.9 warns against
+mixing the two).
+
 ## Checking a build
 
 ```sh

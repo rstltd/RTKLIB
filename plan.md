@@ -2112,7 +2112,7 @@ aux_source_directory(. DIR_SRCS_RTKLIB)
 
 if(ENABLE_FGO)
     find_package(GTSAM 4.2 REQUIRED)
-    find_package(Eigen3 3.3 REQUIRED)
+    find_package(Eigen3 REQUIRED)   # 不可寫 3.3，見下方陷阱 5
     set(DIR_SRCS_FGO
         fgo/fgo_solver.cpp
         fgo/fgo_graph.cpp
@@ -2154,6 +2154,8 @@ set(CMAKE_C_FLAGS "-Wno-unused-but-set-variable ...")   # <- 注意：此行覆�
 2. **不可順手「修正」這個 bug**。修正它會改變最佳化等級與浮點語意（特別是 `-fno-signed-zeros -fno-math-errno`），使所有既有基準失效，且會把「FGO 專案」與「編譯設定變更」兩件事的影響混在一起，無法歸因。**若要修正，應為獨立的 PR，且在 FGO 專案開始前或結束後進行。** 已列為 §14 的 OQ-5。
 
 **陷阱 3**：`add_library(rtklib SHARED ...)` 混合 C 與 C++ 物件檔時，CMake 會自動改用 C++ linker（因為有 CXX 來源）。這會連結 `libstdc++`。對純 C 的下游使用者（`app/consapp/`）無影響，但**靜態連結情境下需注意**。
+
+**陷阱 5（已驗證，2026-08-21）**：`find_package(Eigen3 3.3 REQUIRED)` 會**拒絕**現行安裝的 Eigen。`Eigen3ConfigVersion.cmake` 採 same-major-version 語意，指定 3.3 只接受 3.x；conda-forge 現行版本為 5.0.1，configure 會直接失敗（`The version found is not compatible with the version requested`）。應如 GTSAM 自身的做法寫成 `find_dependency(Eigen3 REQUIRED)` 不加版本——GTSAM 是對著現場的 Eigen 編譯的，與 GTSAM 一致才是重點，自訂下限反而有害。
 
 **陷阱 4（已驗證，2026-08-20）**：`IncrementalFixedLagSmoother` 與 `BatchFixedLagSmoother` 位於 **`gtsam_unstable`**，不在核心 `gtsam` 中（標頭為 `gtsam_unstable/nonlinear/*FixedLagSmoother.h`）。上方 `target_link_libraries` 已據此更正為 `gtsam gtsam_unstable`。§8.4 推薦給 NRT 的兩種 solver（SLIDING / ISAM2）皆依賴這兩個類別，若只連結 `gtsam` 會在連結期失敗。**另一層意義**：`gtsam_unstable` 不保證跨版本 API 穩定，這使 RC-10 的版本鎖定成為硬性需求而非建議。詳見 `docs/fgo/build_environment.md`。
 
