@@ -98,12 +98,24 @@ echo "== stub behaviour (C) =="
 "$work/probe" || bad=$((bad+1))
 
 echo "== C++ links against the C stub =="
+# The stub must be compiled by the C compiler into an object, and only then
+# linked with the C++ one.  Handing fgo_stub.c straight to $cxx would compile
+# it as C++, so both sides would mangle identically and the test would pass
+# even with the extern "C" guard deleted -- which is the one regression it
+# exists to catch.
+# shellcheck disable=SC2086
+"$cc" -c -std=c99 -Wall -Wextra -pedantic $INC $OPTS \
+    "$RTKLIB_ROOT/src/fgo/fgo_stub.c" -o "$work/fgo_stub.o" 2>"$work/e" || {
+    echo "  FAIL compiling the stub as C"; sed 's/^/      /' "$work/e" | head -20
+    exit 1; }
 # shellcheck disable=SC2086
 "$cxx" -std=c++17 -Wall -Wextra -pedantic $INC $OPTS \
-    "$here/fgo_abi_cxx.cpp" "$RTKLIB_ROOT/src/fgo/fgo_stub.c" $objs $ldlibs \
+    "$here/fgo_abi_cxx.cpp" "$work/fgo_stub.o" $objs $ldlibs \
     -o "$work/probecxx" 2>"$work/e" || {
-    echo "  FAIL compile/link"; sed 's/^/      /' "$work/e" | head -20; exit 1; }
-"$work/probecxx" || bad=$((bad+1))
+    echo "  FAIL C++ cannot link the C-compiled stub"
+    echo "       (is the extern \"C\" guard in rtklib_fgo_api.h intact?)"
+    sed 's/^/      /' "$work/e" | head -20; bad=$((bad+1)); }
+[ -x "$work/probecxx" ] && { "$work/probecxx" || bad=$((bad+1)); }
 
 echo
 [ "$bad" = 0 ] || { echo "$bad check(s) failed"; exit 1; }
