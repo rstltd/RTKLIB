@@ -148,7 +148,28 @@ docker compose -f docker/docker-compose.yml up -d
 | `RTKLIB_MAX_UPLOAD_MB` | `256` | 單次請求上傳總量上限 |
 | `RTKLIB_SOLVE_TIMEOUT_S` | `900` | 單次解算逾時 |
 | `RTKLIB_CPUS` / `RTKLIB_MEMORY` | `2.0` / `2g` | 資源上限 |
-| `RTKLIB_TMPFS` | `2g` | 暫存空間，**必須大於上傳上限** |
+| `RTKLIB_TMPFS` | `2g` | 暫存空間，**至少要上傳上限的 2 倍**（見下方說明） |
+
+### 檔案大小上限
+
+`RTKLIB_MAX_UPLOAD_MB` 預設 **256 MB**，限制的是**整個 HTTP request body**——
+三個檔案加上 multipart 的框架開銷（每個檔案約 100 bytes），不是「每個檔案 256 MB」。
+
+超過時回 `413`，而且是在解析 request 之前就擋下，不會先把檔案寫進容器。無論
+client 有沒有送 `Content-Length` 都適用。
+
+要調高時，**tmpfs 也要跟著調**，而且至少要上傳上限的兩倍：
+
+```bash
+RTKLIB_MAX_UPLOAD_MB=1024 RTKLIB_TMPFS=3g docker compose ... up -d
+```
+
+原因是同一份資料在容器內會同時存在兩份——框架先把上傳的每個部分寫成暫存檔，服務再
+把它複製到該次工作的目錄。tmpfs 不夠大的話，會在還沒碰到 413 之前先撞上「磁碟已滿」，
+那個錯誤訊息遠不如 413 好懂。
+
+參考量級：24 小時、30 秒取樣、多星系的觀測檔通常 20–50 MB；1 Hz 的話可以到數百 MB，
+這種情況請把上限與 tmpfs 一起調大，並同時檢查 `RTKLIB_SOLVE_TIMEOUT_S` 是否足夠。
 
 ### 這個服務沒有身分驗證
 
