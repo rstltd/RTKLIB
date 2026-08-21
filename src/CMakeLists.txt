@@ -22,6 +22,26 @@ if(MSVC)
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
 
+# ---- Factor Graph Optimization backend (plan.md 6.9 M20) --------------------
+# aux_source_directory() below collects only src/*.c and does not recurse, so
+# anything under src/fgo/ has to be listed explicitly.
+option(ENABLE_FGO "Build the Factor Graph Optimization solver (requires GTSAM 4.2+)" OFF)
+
+# The C++ backend arrives with plan.md 11.3 PR-6 (work items P3.8-P3.11).
+# Until then this list is empty, and ENABLE_FGO=ON is refused rather than
+# quietly producing a library in which every fgo_* symbol is simply absent.
+set(DIR_SRCS_FGO "")
+
+if(ENABLE_FGO AND NOT DIR_SRCS_FGO)
+    message(FATAL_ERROR
+        "ENABLE_FGO=ON, but the GTSAM backend under src/fgo/ has not landed "
+        "yet (plan.md 11.3 PR-6).\n"
+        "Configure with -DENABLE_FGO=OFF.  The C ABI in "
+        "src/fgo/rtklib_fgo_api.h is already fixed and usable; without the "
+        "backend it resolves to src/fgo/fgo_stub.c, whose entry points return "
+        "FGO_ERR_DISABLED.")
+endif()
+
 aux_source_directory(. DIR_SRCS_RTKLIB)
 set(DIR_SRCS_RTKLIB_RCV
   ${DIR_SRCS_RTKLIB_RCV}
@@ -37,10 +57,33 @@ set(DIR_SRCS_RTKLIB_RCV
   rcv/ublox.c
   rcv/unicore.c
 )
+if(ENABLE_FGO)
+    find_package(GTSAM 4.2 REQUIRED)
+    find_package(Eigen3 3.3 REQUIRED)
+    list(APPEND DIR_SRCS ${DIR_SRCS_FGO})
+    add_definitions(-DENABLE_FGO)
+else()
+    # Pure C stub, so an ENABLE_FGO=OFF build links no C++ runtime at all.
+    list(APPEND DIR_SRCS fgo/fgo_stub.c)
+endif()
+
 list(APPEND DIR_SRCS ${DIR_SRCS_RTKLIB} ${DIR_SRCS_RTKLIB_RCV})
 
 add_library(rtklib SHARED ${DIR_SRCS} rtklib.h)
 set_property(TARGET rtklib PROPERTY C_STANDARD 99)
+
+# src/fgo/ is on the include path either way: rtkpos.c includes
+# rtklib_fgo_api.h regardless of ENABLE_FGO, which is exactly what lets the
+# call sites stay free of #ifdef.
+target_include_directories(rtklib PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/fgo)
+
+if(ENABLE_FGO)
+    set_property(TARGET rtklib PROPERTY CXX_STANDARD 17)
+    set_property(TARGET rtklib PROPERTY CXX_STANDARD_REQUIRED ON)
+    # gtsam_unstable carries the fixed-lag smoothers the sliding-window and
+    # iSAM2 solvers need; see docs/fgo/build_environment.md.
+    target_link_libraries(rtklib gtsam gtsam_unstable)
+endif()
 
 # Give the shared library a SONAME derived from VER_RTKLIB_ABI (src/rtklib.h).
 # Structures such as prcopt_t and rtk_t are part of the public surface, so
