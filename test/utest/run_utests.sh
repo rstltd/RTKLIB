@@ -52,32 +52,30 @@ if [ "${1:-}" = "--list" ]; then
     exit 0
 fi
 
-want=$*
-
-# Validate every requested name before running anything.  Silently skipping a
-# typo would let a targeted run report "0 passed, 0 failed" and exit 0, which
-# reads as success while having tested nothing.
-if [ -n "$want" ]; then
-    known=$(printf '%s\n' "$TESTS" | cut -d: -f1)
-    unknown=
-    for w in $want; do
-        case "
-$known
-" in *"
-$w
-"*) ;; *) unknown="$unknown $w" ;; esac
-    done
-    if [ -n "$unknown" ]; then
-        echo "run_utests.sh: no such test:$unknown" >&2
-        echo "               known tests: $(printf '%s' "$known" | tr '\n' ' ')" >&2
-        exit 2
-    fi
-fi
-
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT INT TERM
 mkdir -p "$work"
 printf '%s\n' "$TESTS" > "$work/list"
+
+# The requested names go to a file, one per line, straight from "$@".  Passing
+# them through an unquoted variable would subject them to word splitting and
+# pathname expansion: run from a directory holding built test binaries, an
+# argument like t_* would expand into real names, pass validation, and then
+# match nothing literally -- restoring the "0 passed, 0 failed" false green
+# this validation exists to prevent.
+: > "$work/want"
+[ $# -gt 0 ] && printf '%s\n' "$@" > "$work/want"
+printf '%s\n' "$TESTS" | cut -d: -f1 > "$work/known"
+
+# Validate before building anything.
+if [ -s "$work/want" ]; then
+    unknown=$(grep -Fxv -f "$work/known" "$work/want" || true)
+    if [ -n "$unknown" ]; then
+        echo "run_utests.sh: no such test: $(printf '%s' "$unknown" | tr '\n' ' ')" >&2
+        echo "               known tests: $(tr '\n' ' ' < "$work/known")" >&2
+        exit 2
+    fi
+fi
 
 pass=0
 fail=0
@@ -88,8 +86,8 @@ while IFS= read -r line; do
     name=${line%%:*}
     extra=${line#*:}
 
-    if [ -n "$want" ]; then
-        case " $want " in *" $name "*) ;; *) continue ;; esac
+    if [ -s "$work/want" ] && ! grep -Fxq "$name" "$work/want"; then
+        continue
     fi
 
     srcs="$SRC/rtkcmn.c $SRC/trace.c $SRC/preceph.c"
