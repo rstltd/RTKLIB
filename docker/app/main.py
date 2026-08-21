@@ -16,17 +16,33 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
+
+# uvicorn configures its own loggers but not the root, so a bare getLogger()
+# would emit nothing at all -- which is how the first version of this shipped.
+# Attach a handler explicitly rather than relying on basicConfig, which does
+# nothing when the root already has one.
+LOG = logging.getLogger("rtklib.solve")
+if not LOG.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    LOG.addHandler(_handler)
+    LOG.propagate = False
+LOG.setLevel(os.environ.get("RTKLIB_LOG_LEVEL", "INFO").upper())
 
 RNX2RTKP = os.environ.get("RTKLIB_BIN", "/opt/rtklib/bin/rnx2rtkp")
 CONF_DIR = Path(os.environ.get("RTKLIB_CONF_DIR", "/opt/rtklib/conf"))
@@ -143,16 +159,36 @@ app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_UPLOAD_MB * 1024 * 102
 
 @app.middleware("http")
 async def _job_id(request, call_next):
-    """Stamp every response with an identifier, successes and failures alike.
+    """Stamp every response with an identifier, and log it.
 
     The success body carries `job`, but a caller reporting a problem is by
     definition not holding a success body -- so asking them for an identifier
     that only exists on the happy path is asking for nothing. Added last, so
     it wraps the size limit and 413s are stamped too.
+
+    The header alone would not be enough either: uvicorn's access log records
+    neither custom headers nor request.state, so an operator handed an
+    X-Job-Id would have nothing to match it against. The line written here is
+    what makes the identifier useful.
+
+    An unhandled exception is caught rather than allowed to propagate, because
+    Starlette's outer error handler builds its own 500 and the header would be
+    lost exactly when something unexpected went wrong -- which is when the
+    identifier matters most.
     """
     job = uuid.uuid4().hex[:12]
     request.state.job = job
-    response = await call_next(request)
+    started = time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:  # noqa: BLE001
+        LOG.exception("job=%s %s %s -> 500 unhandled", job, request.method,
+                      request.url.path)
+        response = JSONResponse({"detail": "internal server error"},
+                                status_code=500)
+    LOG.info("job=%s %s %s -> %d (%.1fs)", job, request.method,
+             request.url.path, response.status_code,
+             time.monotonic() - started)
     response.headers["X-Job-Id"] = job
     return response
 
