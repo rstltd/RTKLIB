@@ -13,8 +13,24 @@
 FGO 目前還不能解算，所有的解都來自 RTKLIB 原本的 Extended Kalman Filter。若你指定
 `solver=fgo-*`，服務會回 400 拒絕，不會默默改用 EKF 給你一個數字。
 
-**二、有 base 才有公分級。** 沒有基站觀測檔就只能單點定位（誤差數公尺）。這不是服務
-的限制，是 GNSS 本身。
+**二、公分級是「相對於基站」的。** 沒有基站就只能單點定位（公尺級），這是 GNSS 本身
+的限制。但有了基站也**不代表絕對座標就準**——服務直接採用基站 RINEX 標頭裡的
+`APPROX POSITION XYZ`（preset 的 `ant2-postype=rinexhead`），而那個值往往只是接收機
+自己算的概略解，可能差好幾公尺。
+
+結果是：`fix` 的解相對於基站是公分級，但**整組解會連同基站的誤差一起平移**。
+
+所以做控制點測量或變形監測時：
+
+- 基站標頭裡必須是**實測過的精確座標**，不能是接收機的概略解；
+- 變形監測若只關心「隨時間的變化量」，基站的絕對誤差會被抵消，影響不大；
+- 但要輸出絕對座標，先確認基站座標從何而來。
+
+不確定的話，看一眼基站檔的標頭：
+
+```bash
+grep "APPROX POSITION" base.obs
+```
 
 ---
 
@@ -247,9 +263,18 @@ rm -f "$resp"
 
 ## 回報問題時請附上
 
-- `job`（回應裡的識別碼）
+- **`X-Job-Id` 回應標頭**——成功或失敗都有，維運可以用它對到伺服器日誌
 - HTTP 狀態碼與 `detail` 內容
 - `/capabilities` 的輸出
 - 用了哪個 preset、有沒有給 base
+
+取得 job id：
+
+```bash
+curl -s -D - -o /dev/null -X POST http://rtklib:8000/solve \
+     -F "rover=@rover.obs" -F "nav=@brdc.nav" | grep -i x-job-id
+```
+
+成功的回應另外也會在 JSON 的 `job` 欄位帶同一組值。
 
 有這些通常一次就能定位。

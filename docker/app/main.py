@@ -25,7 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 RNX2RTKP = os.environ.get("RTKLIB_BIN", "/opt/rtklib/bin/rnx2rtkp")
@@ -139,6 +139,22 @@ class BodySizeLimitMiddleware:
 
 
 app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_UPLOAD_MB * 1024 * 1024)
+
+
+@app.middleware("http")
+async def _job_id(request, call_next):
+    """Stamp every response with an identifier, successes and failures alike.
+
+    The success body carries `job`, but a caller reporting a problem is by
+    definition not holding a success body -- so asking them for an identifier
+    that only exists on the happy path is asking for nothing. Added last, so
+    it wraps the size limit and 413s are stamped too.
+    """
+    job = uuid.uuid4().hex[:12]
+    request.state.job = job
+    response = await call_next(request)
+    response.headers["X-Job-Id"] = job
+    return response
 
 
 
@@ -270,6 +286,7 @@ async def _save(upload: UploadFile, dest: Path, budget: list[int]) -> None:
 
 @app.post("/solve")
 async def solve(
+    request: Request,
     rover: UploadFile = File(..., description="rover observation RINEX"),
     base: Optional[UploadFile] = File(None, description="base observation RINEX"),
     nav: UploadFile = File(..., description="navigation RINEX"),
@@ -309,7 +326,7 @@ async def solve(
             },
         )
 
-    job = uuid.uuid4().hex[:12]
+    job = getattr(request.state, "job", uuid.uuid4().hex[:12])
     work = Path(tempfile.mkdtemp(prefix=f"solve-{job}-"))
     try:
         budget = [MAX_UPLOAD_MB * 1024 * 1024]
