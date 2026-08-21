@@ -107,8 +107,11 @@ extern "C" {
  * docs/fgo/abi.md
  *
  * 1 : first versioned ABI.  prcopt_t gained the fgo_* fields and rtk_t gained
- *     rtk_t::fgo, so this is not layout-compatible with any earlier build.  */
-#define VER_RTKLIB_ABI "1"
+ *     rtk_t::fgo, so this is not layout-compatible with any earlier build.
+ * 2 : ddres_core() takes diag(P) rather than the full covariance, and
+ *     fgo_dd_freeze_pairs() takes the state to select at.  Both are exported
+ *     signature changes, which the rule above covers.                       */
+#define VER_RTKLIB_ABI "2"
 
 /* --- domain fragments, assembled here in original order (umbrella header).
  *     Split from the historical single-file rtklib.h; behaviour-preserving. --- */

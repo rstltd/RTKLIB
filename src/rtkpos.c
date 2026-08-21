@@ -1381,6 +1381,10 @@ EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x,
             /* calculate double differences of residuals (code/phase) for each sat */
             for (j=0;j<ns;j++) {
                 if (i==j) continue;  /* skip ref sat */
+                /* frozen: emit exactly the set chosen when the factor was
+                   built, no more and no less */
+                if (ctx->frozen_rows&&
+                    !(j<MAXOBS&&ctx->frozen_rows[j*(NFREQ*2)+f])) continue;
                 sysi=ssat[sat[i]-1].sys;
                 sysj=ssat[sat[j]-1].sys;
                 freqi=freq[frq+iu[i]*nf];
@@ -1388,6 +1392,17 @@ EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x,
                 if (freqi<=0.0||freqj<=0.0) continue;
                 if (!test_sys(sysj,m)) continue;
                 if (!validobs(iu[j],ir[j],f,nf,y)) continue;
+
+                /* Membership is recorded HERE, before the innovation
+                   threshold below, because that test depends on x.  Recording
+                   after it would bake a state-dependent decision into the
+                   factor: selection often runs from a rough initial estimate,
+                   where good observations exceed the threshold, and they would
+                   then be excluded for the life of the factor.  plan.md 5.5.5
+                   asks for the opposite -- relax the hard threshold and leave
+                   the weighting to the robust kernel.  Every guard above this
+                   point reads only the observations, never the state. */
+                if (j<MAXOBS) st->rows[j][f]=1;
 
                 if (H) {
                     Hi=H+nv*nx;
@@ -1753,7 +1768,8 @@ struct fgo_dd_ctx_tag {
     double *y,*e,*azel,*freq; /* base half filled; rover half is scratch only */
     int sat[MAXSAT],iu[MAXSAT],ir[MAXSAT];
     int ref[DDRES_MAXBLK];  /* frozen reference satellites */
-    int frozen;             /* whether ref[] is in force */
+    uint8_t rows[MAXOBS][NFREQ*2]; /* frozen membership */
+    int frozen;             /* whether ref[] and rows[] are in force */
 };
 
 /* doubles of eval scratch: a full copy of y/e/azel/freq plus ddres_core's */
@@ -1891,7 +1907,8 @@ static double *fgo_dd_setup(const fgo_dd_ctx_t *ctx, double *ws,
     dc->y=y; dc->e=e; dc->azel=azel; dc->freq=freq;
     dc->sat=ctx->sat; dc->iu=ctx->iu; dc->ir=ctx->ir;
     dc->ns=ctx->ns; dc->nx=ctx->nx;
-    dc->frozen_ref=ctx->frozen?ctx->ref:NULL;
+    dc->frozen_ref =ctx->frozen?ctx->ref:NULL;
+    dc->frozen_rows=ctx->frozen?&ctx->rows[0][0]:NULL;
 
     /* hand back the mutable rover views and the remaining scratch */
     return ws;
@@ -1942,6 +1959,7 @@ extern int fgo_dd_freeze_pairs(fgo_dd_ctx_t *ctx, const double *x)
     nv=fgo_dd_eval(ctx,x,ctx->nx,ws,v,H,R,vflg,st);
     if (nv>=0) {
         for (i=0;i<DDRES_MAXBLK;i++) ctx->ref[i]=st->ref[i];
+        memcpy(ctx->rows,st->rows,sizeof(ctx->rows));
         ctx->frozen=1;
     }
     free(st); free(ws); free(v); free(H); free(R); free(vflg);

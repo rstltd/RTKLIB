@@ -1,6 +1,19 @@
 # librtklib ABI
 
-## ABI 1 — first versioned ABI (RTKLIB-EX 2.5.2)
+## ABI 2 — current (RTKLIB-EX 2.5.2)
+
+Two exported signatures changed while the FGO callbacks were being built:
+`ddres_core()` now takes `diag(P)` instead of the full covariance, and
+`fgo_dd_freeze_pairs()` takes the state to select at. Neither is a struct
+layout change, and both are covered by the rule below — which is the point of
+stating that rule in terms of "would an already-linked executable be unsafe"
+rather than in terms of structs.
+
+**ABI 1 was never released.** It existed only on the FGO development branch and
+was superseded before merge. Nothing should be looking for a
+`librtklib.so.1`; if something is, it predates versioning entirely.
+
+## ABI 1 — first versioned ABI (superseded, never released)
 
 **This release breaks binary compatibility with every earlier build.**
 Everything that links `librtklib` must be rebuilt.

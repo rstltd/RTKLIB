@@ -63,7 +63,7 @@ int main(int argc, char **argv)
     ddres_stat_t *st=NULL,*st2=NULL;
     double *ws=NULL,*v=NULL,*H=NULL,*R=NULL,*v2=NULL,*H2=NULL,*R2=NULL,*x=NULL;
     int *vflg=NULL,*vflg2=NULL;
-    int nu=0,nr=0,i,nv,nv2,nvmax,rc;
+    int nu=0,nr=0,i,nv,nv2,nvmax,rc,nvsel=0,nrejsel=0,*vflgsel=NULL;
 
     memset(sta,0,sizeof(sta));
     printf("FGO double-difference callback (plan.md 3.4, gate G4)\n");
@@ -107,9 +107,10 @@ int main(int argc, char **argv)
     v =mat(nvmax,1); H =zeros(rtk.nx,nvmax); R =mat(nvmax,nvmax);
     v2=mat(nvmax,1); H2=zeros(rtk.nx,nvmax); R2=mat(nvmax,nvmax);
     vflg=imat(nvmax,1); vflg2=imat(nvmax,1); x=mat(rtk.nx,1);
+    vflgsel=imat(nvmax,1);
     st =(ddres_stat_t *)malloc(sizeof(ddres_stat_t));
     st2=(ddres_stat_t *)malloc(sizeof(ddres_stat_t));
-    if (!ws||!v||!H||!R||!v2||!H2||!R2||!vflg||!vflg2||!x||!st||!st2) {
+    if (!ws||!v||!H||!R||!v2||!H2||!R2||!vflg||!vflg2||!x||!st||!st2||!vflgsel) {
         printf("  allocation failed\n"); return 2;
     }
     matcpy(x,rtk.x,rtk.nx,1);
@@ -163,6 +164,12 @@ int main(int argc, char **argv)
         }
     }
 
+    /* record what an unfrozen evaluation selects, to compare against */
+    matcpy(x,rtk.x,rtk.nx,1);
+    nvsel=fgo_dd_eval(ctx,x,rtk.nx,ws,v,H,R,vflg,st);
+    if (nvsel>0) memcpy(vflgsel,vflg,nvsel*sizeof(int));
+    nrejsel=st->nrej;
+
     /* 5. freezing must decouple the row count from the state.  The
        displacement is deliberately large: a few metres only moves elevations
        by microdegrees, so it would not exercise the elevation and SNR masks
@@ -177,6 +184,18 @@ int main(int argc, char **argv)
         char d[128];
         matcpy(x,rtk.x,rtk.nx,1);
         nva=fgo_dd_eval(ctx,x,rtk.nx,ws,v,H,R,vflg,st);
+        /* the frozen set must equal the set freezing SELECTED, not merely be
+           self-consistent afterwards: disabling the masks so residuals stay
+           computable must not let in a row that was masked out at selection */
+        /* The frozen set is every CANDIDATE the selection saw, which is the
+           rows it emitted plus the ones it dropped on the innovation
+           threshold.  Those are dropped for a state-dependent reason, so a
+           factor built from a rough initial estimate must not lose them
+           permanently; they come back flagged, for the robust kernel to
+           weight (plan.md 5.5.5). */
+        check("frozen set is exactly the selected candidates",
+              nva==nvsel+nrejsel,"emitted %d + rejected %d = %d, frozen %d",
+              nvsel,nrejsel,nvsel+nrejsel,nva);
         snprintf(d,sizeof d,"nv=%d",nva);
         for (k=0;k<(int)(sizeof(disp)/sizeof(disp[0]))&&ok;k++) {
             matcpy(x,rtk.x,rtk.nx,1);
@@ -212,7 +231,7 @@ int main(int argc, char **argv)
     }
 
     free(ws);free(v);free(H);free(R);free(v2);free(H2);free(R2);
-    free(vflg);free(vflg2);free(x);free(st);free(st2);
+    free(vflg);free(vflg2);free(vflgsel);free(x);free(st);free(st2);
     fgo_dd_ctx_destroy(ctx);
     rtkfree(&rtk);
     freeobs(&obs); freenav(&nav,0xFF);

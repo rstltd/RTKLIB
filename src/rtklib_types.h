@@ -892,6 +892,19 @@ typedef struct {        /* DD residual evaluation context (read-only inputs) */
     const int *ir;          /* base observation index */
     int ns;                 /* number of common satellites */
     int nx;                 /* number of states (H row stride) */
+    const uint8_t *frozen_rows; /* which double differences to emit, indexed by
+                               j*(NFREQ*2)+f for j in [0,ns) -- the exact set
+                               chosen when the factor was built.  NULL means
+                               decide dynamically.
+
+                               Needed IN ADDITION to frozen_ref, and for the
+                               opposite reason: freezing the reference stops
+                               the pairing from moving, while this stops the
+                               membership from moving.  Disabling the
+                               elevation and SNR masks so residuals stay
+                               computable would otherwise let a satellite that
+                               failed those masks at selection time appear as a
+                               new row later */
     const int *frozen_ref;  /* frozen reference satellites, indexed by
                                m*(NFREQ*2)+f, value = index into sat[], or -1.
                                NULL selects them dynamically, which is what the
@@ -951,4 +964,9 @@ typedef struct {        /* outputs ddres() used to write straight into rtk_t */
                                     mode, where such rows are emitted rather
                                     than dropped; in dynamic mode they are
                                     dropped and this stays clear */
+    uint8_t rows[MAXOBS][NFREQ*2]; /* which double differences were emitted,
+                                    indexed by target satellite position in
+                                    sat[] and by f.  Feed back as
+                                    ddres_ctx_t::frozen_rows to reproduce
+                                    exactly this set */
 } ddres_stat_t;
