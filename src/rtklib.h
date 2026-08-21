@@ -110,8 +110,10 @@ extern "C" {
  *     rtk_t::fgo, so this is not layout-compatible with any earlier build.
  * 2 : ddres_core() takes diag(P) rather than the full covariance, and
  *     fgo_dd_freeze_pairs() takes the state to select at.  Both are exported
- *     signature changes, which the rule above covers.                       */
-#define VER_RTKLIB_ABI "2"
+ *     signature changes, which the rule above covers.
+ * 3 : fgo_dd_mode() is replaced by fgo_dd_opt(), which exposes the whole
+ *     option snapshot.  A removed export, which the rule also covers.      */
+#define VER_RTKLIB_ABI "3"
 
 /* --- domain fragments, assembled here in original order (umbrella header).
  *     Split from the historical single-file rtklib.h; behaviour-preserving. --- */

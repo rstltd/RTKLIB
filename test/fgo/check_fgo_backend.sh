@@ -87,7 +87,10 @@ cfg() { # <builddir> <ON|OFF>
         >"$work/cfg.$2.log" 2>&1
 }
 
-lib=$RTKLIB_ROOT/lib/librtklib.so.2.0.0
+# derive from VER_RTKLIB_ABI so this does not need editing on every bump
+abi=$(sed -n 's/^#define VER_RTKLIB_ABI "\([0-9]*\)".*/\1/p' "$RTKLIB_ROOT/src/rtklib.h")
+[ -n "$abi" ] || { echo "check_fgo_backend.sh: cannot read VER_RTKLIB_ABI" >&2; exit 1; }
+lib=$RTKLIB_ROOT/lib/librtklib.so.$abi.0.0
 
 echo "== ENABLE_FGO=ON build =="
 rm -f "$RTKLIB_ROOT"/lib/librtklib.so*

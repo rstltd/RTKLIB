@@ -1,6 +1,32 @@
 # librtklib ABI
 
-## ABI 2 — current (RTKLIB-EX 2.5.2)
+## Numbers move quickly on a development branch
+
+The rule below is deliberately mechanical — bump whenever an already-linked
+executable would be unsafe — and it is applied even to changes made on an
+unmerged branch, where nothing could possibly be linked yet. That is on
+purpose: an exception for "not released yet" would need someone to judge
+what counts as released, and that judgement is exactly what the rule exists
+to remove.
+
+The consequence is that the number advances several times while a feature is
+being built, and most of those generations never ship. Each is recorded
+against `VER_RTKLIB_ABI` in `src/rtklib.h` so that the history reads
+sensibly, but **do not go looking for a `librtklib.so.1` or `.so.2` in the
+wild** — they existed only on the FGO branch. The number that matters is the
+one on `main`.
+
+## ABI 3 — current (RTKLIB-EX 2.5.2)
+
+`fgo_dd_mode()` was replaced by `fgo_dd_opt()`, which returns the whole option
+snapshot rather than one field. Callers need more than the positioning mode:
+`ionoopt`, `tropopt` and `glomodear` each decide whether a state other than the
+position enters the residual, and a factor that connects only the position must
+refuse those configurations rather than absorb their error.
+
+A removed export, not a struct change — the rule covers it.
+
+## ABI 2 — superseded during development
 
 Two exported signatures changed while the FGO callbacks were being built:
 `ddres_core()` now takes `diag(P)` instead of the full covariance, and
@@ -9,9 +35,8 @@ layout change, and both are covered by the rule below — which is the point of
 stating that rule in terms of "would an already-linked executable be unsafe"
 rather than in terms of structs.
 
-**ABI 1 was never released.** It existed only on the FGO development branch and
-was superseded before merge. Nothing should be looking for a
-`librtklib.so.1`; if something is, it predates versioning entirely.
+**ABI 1 and 2 were never released.** Both existed only on the FGO development
+branch. See the note above on why the number moves during development.
 
 ## ABI 1 — first versioned ABI (superseded, never released)
 
