@@ -99,10 +99,13 @@ if ! FGO_ENV_PREFIX=$prefix "$cmake_bin" --build "$work/on" --target rtklib \
     echo "  FAIL build"; grep -E "error" "$work/build.on.log" | head -15 | sed 's/^/      /'
     exit 1
 fi
-nsym=$(nm -D "$lib" | grep -c ' T fgo_' || true)
-echo "  PASS builds and exports $nsym fgo_ symbols"
-[ "$(ldd "$lib" | grep -c gtsam)" -gt 0 ] &&
-    echo "  PASS links GTSAM" || { echo "  FAIL GTSAM not linked"; bad=$((bad+1)); }
+nm -D "$lib" | sed -n 's/.* T \(fgo_[A-Za-z0-9_]*\)$/\1/p' | sort > "$work/sym.on"
+echo "  exports $(wc -l < "$work/sym.on" | tr -d ' ') fgo_ symbols"
+if [ "$(ldd "$lib" | grep -c gtsam)" -gt 0 ]; then
+    echo "  PASS links GTSAM"
+else
+    echo "  FAIL GTSAM not linked"; bad=$((bad+1))
+fi
 
 # ---- 4. behaviour ----------------------------------------------------------
 echo "== backend behaviour =="
@@ -147,6 +150,19 @@ if [ "$cxxrt" = 0 ]; then
     echo "  PASS no C++ runtime or GTSAM linked"
 else
     echo "  FAIL C++ runtime leaked into the disabled build"; bad=$((bad+1))
+fi
+
+# The two builds must present the SAME C ABI -- that is the entire premise of
+# the stub, and what lets rtkpos.c call these without knowing which is linked.
+# Counting symbols would not catch a callback quietly dropped from one side,
+# so the sets are compared.
+nm -D "$lib" | sed -n 's/.* T \(fgo_[A-Za-z0-9_]*\)$/\1/p' | sort > "$work/sym.off"
+if diff -u "$work/sym.off" "$work/sym.on" > "$work/sym.diff"; then
+    echo "  PASS ON and OFF export the same $(wc -l < "$work/sym.on" | tr -d ' ') fgo_ symbols"
+else
+    echo "  FAIL the two builds export different symbol sets"
+    sed -n '3,$p' "$work/sym.diff" | sed 's/^/      /' | head -12
+    bad=$((bad+1))
 fi
 rm -f "$RTKLIB_ROOT"/lib/librtklib.so*
 

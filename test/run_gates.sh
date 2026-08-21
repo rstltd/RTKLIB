@@ -78,4 +78,4 @@ echo "all gates passed"
 echo
 echo "not covered here (CI, plan.md 11.1 P1.4):"
 echo "  - a second compiler; this run used a single pinned toolchain"
-echo "  - ENABLE_FGO=ON where GTSAM is absent; the fgo-backend gate skips
+echo "  - ENABLE_FGO=ON where GTSAM is absent; the fgo-backend gate skips"

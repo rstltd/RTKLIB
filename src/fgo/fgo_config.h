@@ -56,6 +56,29 @@ inline gtsam::Key makeKey(unsigned char c, std::uint64_t j, const char *what)
     return gtsam::Symbol(c, j);
 }
 
+/* Composite schemas pack two numbers into one index, so a component out of
+   range does not overflow -- it ALIASES.  keyTrop(k, 2) is keyTrop(k+1, 0) and
+   keyIono(k, MAXSAT+1) is keyIono(k+1, 1): the graph would silently tie two
+   unrelated quantities to one variable, which is far worse than a crash and
+   would be nearly impossible to diagnose from the solution.  Every component
+   is therefore range-checked before it is flattened, and the epoch is checked
+   against the stride so the multiplication itself cannot wrap. */
+inline void checkComponent(bool ok, const char *what, long long value)
+{
+    if (!ok) {
+        throw std::out_of_range(std::string("fgo: ") + what + " out of range (" +
+                                std::to_string(value) + ")");
+    }
+}
+inline std::uint64_t flatten(std::uint64_t epoch, std::uint64_t stride,
+                             std::uint64_t offset, const char *what)
+{
+    checkComponent(offset < stride, what, static_cast<long long>(offset));
+    checkComponent(epoch <= (kMaxKeyIndex - offset) / stride, what,
+                   static_cast<long long>(epoch));
+    return epoch * stride + offset;
+}
+
 /* receiver position, velocity and acceleration at epoch k */
 inline gtsam::Key keyPos(std::uint64_t k) { return makeKey('p', k, "position"); }
 inline gtsam::Key keyVel(std::uint64_t k) { return makeKey('v', k, "velocity"); }
@@ -64,19 +87,23 @@ inline gtsam::Key keyAcc(std::uint64_t k) { return makeKey('a', k, "acceleration
 /* zenith tropospheric delay, per receiver (0 rover, 1 base) */
 inline gtsam::Key keyTrop(std::uint64_t k, int rcv)
 {
-    return makeKey('t', k * 2 + static_cast<std::uint64_t>(rcv), "troposphere");
+    checkComponent(rcv == 0 || rcv == 1, "troposphere receiver", rcv);
+    return makeKey('t', flatten(k, 2, static_cast<std::uint64_t>(rcv),
+                                "troposphere"), "troposphere");
 }
 
 /* slant ionospheric delay, per satellite */
 inline gtsam::Key keyIono(std::uint64_t k, int sat)
 {
-    return makeKey('i', k * MAXSAT + static_cast<std::uint64_t>(sat - 1),
-                   "ionosphere");
+    checkComponent(sat >= 1 && sat <= MAXSAT, "ionosphere satellite", sat);
+    return makeKey('i', flatten(k, MAXSAT, static_cast<std::uint64_t>(sat - 1),
+                                "ionosphere"), "ionosphere");
 }
 
 /* GLONASS inter-channel bias, one per frequency for the whole run */
 inline gtsam::Key keyGloIcb(int f)
 {
+    checkComponent(f >= 0 && f < NFREQ, "GLONASS ICB frequency", f);
     return makeKey('g', static_cast<std::uint64_t>(f), "GLONASS ICB");
 }
 

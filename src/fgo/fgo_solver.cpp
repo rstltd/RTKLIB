@@ -21,6 +21,7 @@
 #include "fgo_config.h"
 
 #include <exception>
+#include <memory>
 #include <new>
 #include <cstdio>
 #include <cstring>
@@ -154,9 +155,16 @@ extern "C" int fgo_init(rtk_t *rtk, const prcopt_t *opt)
     if (!rtk || !opt) return FGO_ERR_BADARG;
     FGO_BOUNDARY_BEGIN
         if (rtk->fgo) return FGO_OK;          /* idempotent */
-        fgo::Solver *s = new fgo::Solver(*opt);
-        rtk->fgo = s;
-        trace(2, "fgo: init %s\n", s->config().describe().c_str());
+        /* Everything that can throw happens before rtk->fgo is assigned, and
+           the solver is owned by a unique_ptr until then.  Otherwise a failure
+           in, say, describe() building its string would return an error while
+           leaving a live context bound: the caller would see initialisation
+           fail, and a retry would then return FGO_OK for a context it never
+           successfully created. */
+        std::unique_ptr<fgo::Solver> s(new fgo::Solver(*opt));
+        const std::string summary = s->config().describe();
+        trace(2, "fgo: init %s\n", summary.c_str());
+        rtk->fgo = s.release();
         return FGO_OK;
     FGO_BOUNDARY_END(FGO_RET_INT)
 }

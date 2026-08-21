@@ -129,6 +129,39 @@ int main()
                        (fgo::keyIono(2, 5) != fgo::keyIono(2, 6));
         } catch (const std::exception &) { ok = false; }
         check("keys round-trip and do not collide", ok);
+
+        /* A composite key packs two numbers into one index, so an out-of-range
+           component aliases rather than overflows: keyTrop(k,2) would be
+           keyTrop(k+1,0).  Tying two unrelated quantities to one variable is
+           far worse than a crash and would be almost undiagnosable from the
+           solution, so each component is range-checked. */
+        struct { const char *what; bool threw; } aliasing[] = {
+            {"keyTrop rcv=2",     false},
+            {"keyIono sat=0",     false},
+            {"keyIono sat=MAXSAT+1", false},
+            {"keyGloIcb f=NFREQ", false},
+            {"keyIono epoch overflow", false},
+        };
+        try { (void)fgo::keyTrop(5, 2); }        catch (const std::exception &) { aliasing[0].threw = true; }
+        try { (void)fgo::keyIono(5, 0); }        catch (const std::exception &) { aliasing[1].threw = true; }
+        try { (void)fgo::keyIono(5, MAXSAT + 1); } catch (const std::exception &) { aliasing[2].threw = true; }
+        try { (void)fgo::keyGloIcb(NFREQ); }     catch (const std::exception &) { aliasing[3].threw = true; }
+        /* the multiplication itself must not wrap before the check */
+        try { (void)fgo::keyIono(fgo::kMaxKeyIndex, 1); } catch (const std::exception &) { aliasing[4].threw = true; }
+
+        std::string bad2;
+        for (const auto &a : aliasing) if (!a.threw) { bad2 += a.what; bad2 += " "; }
+        check("out-of-range key components are rejected", bad2.empty(),
+              "%s", bad2.empty() ? "" : ("accepted: " + bad2).c_str());
+
+        /* and the valid boundary values must still work */
+        bool edges = true;
+        try {
+            (void)fgo::keyTrop(0, 1);
+            (void)fgo::keyIono(0, MAXSAT);
+            (void)fgo::keyGloIcb(NFREQ - 1);
+        } catch (const std::exception &) { edges = false; }
+        check("valid boundary components are accepted", edges);
     }
 
     if (nfail) { std::printf("\n%d check(s) FAILED\n", nfail); return 1; }
