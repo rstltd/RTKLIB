@@ -18,9 +18,42 @@
 
 namespace fgo {
 
+bool GnssDDFactor::supports(const fgo_dd_ctx_t *ctx, std::string *why)
+{
+    const prcopt_t *opt = ctx ? fgo_dd_opt(ctx) : nullptr;
+    if (!opt) {
+        if (why) *why = "no context";
+        return false;
+    }
+    /* Every one of these puts a state OTHER than the position into the
+       residual that ddres_core() computes.  Holding such a state at its
+       baseline value does not make the factor approximate -- it makes it
+       wrong in a way that lands entirely in the position, because the
+       position is the only thing the optimizer can move.  Refusing is the
+       honest answer until those states become graph variables (P3.9/P3.10). */
+    if (opt->mode > PMODE_DGPS) {
+        if (why) *why = "carrier phase mode needs phase bias variables";
+        return false;
+    }
+    if (opt->ionoopt == IONOOPT_EST) {
+        if (why) *why = "estimated ionosphere needs iono variables";
+        return false;
+    }
+    if (opt->tropopt >= TROPOPT_EST) {
+        if (why) *why = "estimated troposphere needs tropo variables";
+        return false;
+    }
+    if (opt->glomodear == GLO_ARMODE_AUTOCAL) {
+        if (why) *why = "GLONASS ICB autocal needs an ICB variable";
+        return false;
+    }
+    return true;
+}
+
 GnssDDFactor::GnssDDFactor(const gtsam::SharedNoiseModel &model,
                            gtsam::Key posKey, const fgo_dd_ctx_t *ctx,
-                           const double *xBase, int nx, int dim)
+                           const double *xBase, int nx, int dim,
+                           const ddres_stat_t &st0)
     : Base(model, posKey), ctx_(ctx), nx_(nx), dim_(dim),
       xBase_(xBase, xBase + nx)
 {
@@ -31,7 +64,16 @@ GnssDDFactor::GnssDDFactor(const gtsam::SharedNoiseModel &model,
     H_.resize(static_cast<std::size_t>(nvmax) * nx);
     R_.resize(static_cast<std::size_t>(nvmax) * nvmax);
     vflg_.resize(nvmax);
-    st_.reset(new ddres_stat_t);
+    st_.reset(new ddres_stat_t(st0));
+}
+
+gtsam::NonlinearFactor::shared_ptr GnssDDFactor::clone() const
+{
+    /* Scratch is per-instance, so the copy gets its own: two clones must be
+       evaluable independently, including from different threads.  The context
+       is shared by design -- it is immutable once frozen. */
+    return gtsam::NonlinearFactor::shared_ptr(new GnssDDFactor(
+        noiseModel(), keys().front(), ctx_, xBase_.data(), nx_, dim_, *st_));
 }
 
 int GnssDDFactor::evalAt(const gtsam::Point3 &p) const
@@ -52,15 +94,17 @@ SharedFactor<GnssDDFactor> GnssDDFactor::create(gtsam::Key posKey,
     if (!ctx || !xBase || nx <= 0) {
         throw std::invalid_argument("fgo: GnssDDFactor::create bad argument");
     }
-    /* A carrier phase configuration needs bias variables this factor does not
-       yet provide.  Silence would be the wrong answer: with the baseline
-       biases at zero the phase residuals are enormous and the optimizer
-       diverges spectacularly rather than failing, so say so where it can be
-       traced back to. */
-    if (fgo_dd_mode(ctx) > PMODE_DGPS) {
-        fgo_trace(2, "fgo: GnssDDFactor built for a carrier phase mode; phase "
-                     "biases are held at their baseline values and the "
-                     "solution is only as good as those (plan.md 11.3 P3.9)\n");
+    /* Refuse rather than warn.  With an unmodelled state held at its baseline
+       value the error lands entirely in the position -- observed with phase
+       biases at zero, where the optimizer moved the position 9500 km to fit
+       residuals of order 1e7 m.  A caller that gets a solution back has to be
+       able to trust it. */
+    std::string why;
+    if (!supports(ctx, &why)) {
+        fgo_trace(2, "fgo: GnssDDFactor unsupported configuration: %s\n",
+                  why.c_str());
+        throw std::invalid_argument("fgo: GnssDDFactor unsupported "
+                                    "configuration: " + why);
     }
 
     /* Build once at the baseline state to learn the dimension and the
@@ -98,7 +142,7 @@ SharedFactor<GnssDDFactor> GnssDDFactor::create(gtsam::Key posKey,
     gtsam::SharedNoiseModel model = gtsam::noiseModel::Gaussian::Covariance(cov);
 
     return SharedFactor<GnssDDFactor>(
-        new GnssDDFactor(model, posKey, ctx, xBase, nx, nv));
+        new GnssDDFactor(model, posKey, ctx, xBase, nx, nv, st));
 }
 
 gtsam::Vector GnssDDFactor::evaluateError(

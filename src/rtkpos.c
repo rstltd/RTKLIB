@@ -1782,9 +1782,9 @@ extern int fgo_dd_ws_size(const fgo_dd_ctx_t *ctx)
     if (!ctx) return FGO_ERR_BADARG;
     return fgo_dd_ws_doubles(ctx->n,ctx->ns,ctx->nf);
 }
-extern int fgo_dd_mode(const fgo_dd_ctx_t *ctx)
+extern const prcopt_t *fgo_dd_opt(const fgo_dd_ctx_t *ctx)
 {
-    return ctx?ctx->opt.mode:FGO_ERR_BADARG;
+    return ctx?&ctx->opt:NULL;
 }
 extern int fgo_dd_nvmax(const fgo_dd_ctx_t *ctx)
 {

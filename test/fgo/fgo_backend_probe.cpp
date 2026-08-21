@@ -232,6 +232,58 @@ int main(int argc, char **argv)
                       "rows=%d rejected=%d", f ? f->rows() : 0,
                       f ? f->rejectedRows() : 0);
 
+                /* A configuration whose residual uses states this factor does
+                   not connect must be refused.  Holding them at their baseline
+                   puts their whole error into the position, which is the one
+                   thing the optimizer can move. */
+                {
+                    std::string why;
+                    const bool sup = fgo::GnssDDFactor::supports(ctx, &why);
+                    check("factor: this configuration is supported", sup,
+                          "%s", why.c_str());
+
+                    /* and each unsupported one is actually refused, checked by
+                       building a context for it rather than by inspection */
+                    static const struct { const char *name; int mode, iono,
+                                          tropo, glo; } unsup[] = {
+                        {"carrier phase", PMODE_STATIC, IONOOPT_BRDC,
+                         TROPOPT_SAAS, GLO_ARMODE_OFF},
+                        {"estimated iono", PMODE_DGPS, IONOOPT_EST,
+                         TROPOPT_SAAS, GLO_ARMODE_OFF},
+                        {"estimated tropo", PMODE_DGPS, IONOOPT_BRDC,
+                         TROPOPT_EST, GLO_ARMODE_OFF},
+                        {"GLONASS autocal", PMODE_DGPS, IONOOPT_BRDC,
+                         TROPOPT_SAAS, GLO_ARMODE_AUTOCAL},
+                    };
+                    std::string accepted;
+                    for (const auto &u : unsup) {
+                        rtk_t r3;
+                        prcopt_t o3 = o2;
+                        o3.mode = u.mode; o3.ionoopt = u.iono;
+                        o3.tropopt = u.tropo; o3.glomodear = u.glo;
+                        rtkinit(&r3, &o3);
+                        for (int i = 0; i < 3; i++) {
+                            r3.rb[i] = sta[1].pos[i];
+                            r3.x[i]  = sta[0].pos[i];
+                        }
+                        r3.sol.time = obs.data[0].time;
+                        fgo_dd_ctx_t *c3 = nullptr;
+                        if (fgo_dd_ctx_create(&c3, &r3, obs.data, nu, nr, &nav)
+                                == FGO_OK) {
+                            std::string w3;
+                            if (fgo::GnssDDFactor::supports(c3, &w3)) {
+                                accepted += u.name; accepted += " ";
+                            }
+                            fgo_dd_ctx_destroy(c3);
+                        }
+                        rtkfree(&r3);
+                    }
+                    check("factor: unsupported configurations are refused",
+                          accepted.empty(), "%s",
+                          accepted.empty() ? "" :
+                          ("wrongly accepted: " + accepted).c_str());
+                }
+
                 if (f) {
                     const gtsam::Point3 p0(r2.x[0], r2.x[1], r2.x[2]);
 
@@ -305,6 +357,36 @@ int main(int argc, char **argv)
                     check("factor: relinearises rather than replaying",
                           (e1 - e0).cwiseAbs().maxCoeff() > 1e-3,
                           "max|de|=%.4f m", (e1 - e0).cwiseAbs().maxCoeff());
+
+                    /* clone() must work: GTSAM calls it whenever a graph is
+                       cloned or rekeyed, and the base implementation throws.
+                       The copy must also have its own scratch, so evaluating
+                       one does not disturb the other. */
+                    {
+                        bool cloned = false, agrees = false, independent = false;
+                        try {
+                            auto c = f->clone();
+                            cloned = (c != nullptr);
+                            if (cloned) {
+                                auto *cd = dynamic_cast<fgo::GnssDDFactor *>(c.get());
+                                if (cd) {
+                                    gtsam::Vector ec = cd->evaluateError(p0);
+                                    agrees = (ec.size() == e0.size()) &&
+                                             ((ec - e0).cwiseAbs().maxCoeff() < 1e-12);
+                                    /* move the clone, original must not shift */
+                                    (void)cd->evaluateError(
+                                        gtsam::Point3(p0.x()+50.0, p0.y(), p0.z()));
+                                    gtsam::Vector again = f->evaluateError(p0);
+                                    independent =
+                                        ((again - e0).cwiseAbs().maxCoeff() < 1e-12);
+                                }
+                            }
+                        } catch (const std::exception &) { cloned = false; }
+                        check("factor: clone works and has its own scratch",
+                              cloned && agrees && independent,
+                              "cloned=%d agrees=%d independent=%d",
+                              (int)cloned, (int)agrees, (int)independent);
+                    }
 
                     /* And it must solve: a graph of this factor plus a loose
                        prior should move toward the true position. */

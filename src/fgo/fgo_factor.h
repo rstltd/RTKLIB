@@ -25,6 +25,7 @@
 #include <gtsam/nonlinear/NonlinearFactor.h>
 
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace fgo {
@@ -73,9 +74,17 @@ class GnssDDFactor : public gtsam::NoiseModelFactorN<gtsam::Point3> {
 public:
     using Base = gtsam::NoiseModelFactorN<gtsam::Point3>;
 
+    /* Whether this factor can represent the context's residual exactly.  It
+       can only do so when NO state other than the position enters that
+       residual -- so no phase biases, no estimated ionosphere or
+       troposphere, no GLONASS inter-channel bias.  Anything else would be
+       silently absorbed into the position, which is worse than refusing.
+       Fills why with a human-readable reason when it returns false. */
+    static bool supports(const fgo_dd_ctx_t *ctx, std::string *why = nullptr);
+
     /* ctx must outlive the factor, and must already be frozen: a factor's
        dimension is fixed at construction, and only freezing makes the row set
-       independent of the state (4.2.1). */
+       independent of the state (4.2.1).  Throws if supports() is false. */
     static SharedFactor<GnssDDFactor> create(gtsam::Key posKey,
                                              const fgo_dd_ctx_t *ctx,
                                              const double *xBase, int nx,
@@ -84,6 +93,11 @@ public:
     gtsam::Vector evaluateError(
         const gtsam::Point3 &p,
         boost::optional<gtsam::Matrix &> Hp = boost::none) const override;
+
+    /* GTSAM clones factors when a graph is cloned or rekeyed, and when an
+       API replaces a noise model.  Without this the base implementation
+       throws at run time. */
+    gtsam::NonlinearFactor::shared_ptr clone() const override;
 
     /* rows the factor carries; fixed for its lifetime */
     int rows() const { return dim_; }
@@ -95,7 +109,8 @@ public:
 
 private:
     GnssDDFactor(const gtsam::SharedNoiseModel &model, gtsam::Key posKey,
-                 const fgo_dd_ctx_t *ctx, const double *xBase, int nx, int dim);
+                 const fgo_dd_ctx_t *ctx, const double *xBase, int nx, int dim,
+                 const ddres_stat_t &st0);
 
     /* Evaluate at a state, into the preallocated buffers.  Returns rows, or a
        negative FGO_ERR_*.  const because the buffers are scratch, not state --
@@ -114,6 +129,9 @@ private:
        linearisation, so nothing here is allocated during it (plan.md 7.2). */
     mutable std::vector<double> x_, ws_, v_, H_, R_;
     mutable std::vector<int> vflg_;
+    /* Seeded from the construction-time evaluation, so rejectedRows() is
+       meaningful before the optimizer has called evaluateError() even once --
+       which is exactly when a caller inspects it. */
     mutable std::unique_ptr<ddres_stat_t> st_;
 };
 

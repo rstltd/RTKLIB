@@ -174,10 +174,12 @@ EXPORT int  fgo_dd_nvmax(const fgo_dd_ctx_t *ctx);
 /* Doubles of scratch fgo_dd_eval() needs for this context.                  */
 EXPORT int  fgo_dd_ws_size(const fgo_dd_ctx_t *ctx);
 
-/* The positioning mode the context was built for, as a PMODE_* value.  Callers
-   need it because it decides whether the context emits carrier phase rows at
-   all, and therefore whether phase bias states are involved.                */
-EXPORT int  fgo_dd_mode(const fgo_dd_ctx_t *ctx);
+/* The options the context was built with.  Callers need these to know which
+   states the residual actually depends on -- the positioning mode decides
+   whether carrier phase rows appear, and ionoopt/tropopt/glomodear decide
+   whether atmospheric and inter-channel states enter it.  The returned
+   pointer belongs to the context and is valid for its lifetime.            */
+EXPORT const prcopt_t *fgo_dd_opt(const fgo_dd_ctx_t *ctx);
 
 /* Undifferenced pseudorange equivalents (plan.md 4.2.2).                    */
 EXPORT int  fgo_pr_ctx_create (fgo_pr_ctx_t **ctx, rtk_t *rtk,
