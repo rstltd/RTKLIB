@@ -53,6 +53,27 @@ if [ "${1:-}" = "--list" ]; then
 fi
 
 want=$*
+
+# Validate every requested name before running anything.  Silently skipping a
+# typo would let a targeted run report "0 passed, 0 failed" and exit 0, which
+# reads as success while having tested nothing.
+if [ -n "$want" ]; then
+    known=$(printf '%s\n' "$TESTS" | cut -d: -f1)
+    unknown=
+    for w in $want; do
+        case "
+$known
+" in *"
+$w
+"*) ;; *) unknown="$unknown $w" ;; esac
+    done
+    if [ -n "$unknown" ]; then
+        echo "run_utests.sh: no such test:$unknown" >&2
+        echo "               known tests: $(printf '%s' "$known" | tr '\n' ' ')" >&2
+        exit 2
+    fi
+fi
+
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT INT TERM
 mkdir -p "$work"
