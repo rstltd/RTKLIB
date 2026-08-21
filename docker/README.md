@@ -10,12 +10,18 @@
 # 建置並啟動（預設只綁在本機）
 docker compose -f docker/docker-compose.yml up -d --build
 
-# 送一組資料進去
+# 送一組資料進去（差分：rover + base）
 curl -X POST http://127.0.0.1:8000/solve \
      -F "rover=@rover.obs" \
      -F "base=@base.obs" \
      -F "nav=@brdc.nav" \
      -F "preset=static"
+
+# 沒有 base 時用單點模式
+curl -X POST http://127.0.0.1:8000/solve \
+     -F "rover=@rover.obs" \
+     -F "nav=@brdc.nav" \
+     -F "preset=single"
 ```
 
 回傳 JSON，其中 `pos` 欄位就是 RTKLIB 的 `.pos` 內容：
@@ -64,7 +70,7 @@ curl -s http://127.0.0.1:8000/capabilities | jq .fgo
 | 欄位 | 必填 | 說明 |
 |---|---|---|
 | `rover` | ✔ | 移動站（或待測站）觀測檔 RINEX |
-| `base` | | 基站觀測檔。**省略即為單點定位**（無差分） |
+| `base` | | 基站觀測檔。不提供時**必須搭配單點模式的 preset**（見下方 `single`），否則回 400 |
 | `nav` | ✔ | 導航電文 RINEX |
 | `preset` | | 選項組合名稱，預設 `static`。見下方 |
 | `solver` | | 只接受 `ekf`（預設）。其他值回 400 |
@@ -76,9 +82,9 @@ curl -s http://127.0.0.1:8000/capabilities | jq .fgo
 
 | 狀態 | 意思 |
 |---|---|
-| `400` | 參數有問題——例如指定了不存在的 solver，或 preset 名稱含非法字元 |
+| `400` | 參數有問題——指定了不存在的 solver、preset 名稱含非法字元，或**沒給 `base` 卻用了差分模式的 preset**（回應會列出可用的單點 preset） |
 | `404` | preset 不存在。用 `/capabilities` 看有哪些 |
-| `413` | 上傳總量超過上限（預設 256 MB） |
+| `413` | 上傳總量超過上限（預設 256 MB）。在解析 request body 之前就會擋下，不會先把檔案寫進容器 |
 | `422` | 解算失敗，或**解算成功但一個 epoch 都沒有**。後者通常是 rover/base 沒有共同時段或共同衛星。回應中含 `stderr` 節錄 |
 | `504` | 超過時間上限（預設 900 秒） |
 
@@ -94,7 +100,8 @@ curl -s http://127.0.0.1:8000/capabilities | jq .fgo
 ### `GET /health`
 
 給 load balancer 與 healthcheck 用。它會真的去執行一次 solver（`rnx2rtkp --version`），
-所以動態連結壞掉會被抓出來，不只是「行程還活著」。
+所以動態連結壞掉會被抓出來，不只是「行程還活著」。**失敗時回 `503`**，不是回 200 附帶
+一句「unhealthy」——healthcheck 只看狀態碼。
 
 ### `GET /docs`
 

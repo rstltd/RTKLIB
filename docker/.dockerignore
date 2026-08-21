@@ -1,5 +1,0 @@
-**/build/
-**/__pycache__/
-lib/librtklib.so*
-bin/*
-*.o

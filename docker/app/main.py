@@ -39,6 +39,58 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def _limit_body(request, call_next):
+    """Reject oversized bodies before the multipart parser spools them.
+
+    Checking inside the endpoint is too late: Starlette has already parsed the
+    whole body and written each part to a temporary file by the time the
+    handler runs, so a limit enforced there bounds only the second copy. An
+    oversized upload would fill the container's tmpfs and be killed rather than
+    receiving the 413 this service advertises.
+
+    Content-Length covers ordinary clients. A chunked request has none, and is
+    bounded instead by the receive wrapper below, which counts bytes as they
+    arrive and aborts the moment the budget is gone.
+    """
+    limit = MAX_UPLOAD_MB * 1024 * 1024
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > limit:
+                return JSONResponse(
+                    {"detail": f"body exceeds {MAX_UPLOAD_MB} MB"},
+                    status_code=413,
+                )
+        except ValueError:
+            return JSONResponse({"detail": "bad content-length"}, status_code=400)
+    else:
+        received = 0
+        original = request.receive
+
+        async def counting_receive():
+            nonlocal received
+            message = await original()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise _TooLarge()
+            return message
+
+        request._receive = counting_receive  # noqa: SLF001
+
+    try:
+        return await call_next(request)
+    except _TooLarge:
+        return JSONResponse(
+            {"detail": f"body exceeds {MAX_UPLOAD_MB} MB"}, status_code=413
+        )
+
+
+class _TooLarge(Exception):
+    """Raised from the receive wrapper when a chunked body runs over."""
+
+
 def _run(args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
 
@@ -56,20 +108,34 @@ def _build_info() -> dict:
 
 
 @app.get("/health", response_class=JSONResponse)
-async def health() -> dict:
-    """Liveness plus a real check that the solver binary runs."""
+async def health() -> JSONResponse:
+    """Liveness plus a real check that the solver binary runs.
+
+    Returns 503 when it does not. Both healthchecks look only at the status
+    code, so reporting a failure in the body while answering 200 would leave a
+    container with an unusable solver marked healthy.
+    """
     ok = Path(RNX2RTKP).is_file() and os.access(RNX2RTKP, os.X_OK)
     version = None
     if ok:
         try:
-            # rnx2rtkp exits non-zero with no input; --version does not, and
-            # running it proves the dynamic linker can resolve the library.
+            # Running --version proves the dynamic linker resolves librtklib
+            # and its dependencies, which merely stat-ing the file does not.
             proc = _run([RNX2RTKP, "--version"], timeout=10)
-            version = (proc.stdout or proc.stderr).strip().splitlines()[0]
+            if proc.returncode != 0:
+                ok = False
+                version = f"exit {proc.returncode}: {(proc.stderr or '').strip()[:200]}"
+            else:
+                version = (proc.stdout or proc.stderr).strip().splitlines()[0]
         except Exception as exc:  # noqa: BLE001
             ok = False
             version = f"{type(exc).__name__}: {exc}"
-    return {"status": "ok" if ok else "unhealthy", "solver": version}
+    else:
+        version = f"solver not executable: {RNX2RTKP}"
+    return JSONResponse(
+        {"status": "ok" if ok else "unhealthy", "solver": version},
+        status_code=200 if ok else 503,
+    )
 
 
 @app.get("/capabilities", response_class=JSONResponse)
@@ -175,6 +241,23 @@ async def solve(
     if not conf.is_file():
         raise HTTPException(404, f"no such preset: {preset}")
 
+    # A relative preset asks rnx2rtkp for receiver 2, and without base
+    # observations it fails deep inside with "no position in rinex header" --
+    # accurate, but useless to whoever sent the request. Say what is wrong and
+    # what to send instead.
+    if base is None and not _is_single_point(conf):
+        raise HTTPException(
+            400,
+            {
+                "message": (
+                    f"preset '{preset}' is a relative (differential) mode and "
+                    "needs base observations"
+                ),
+                "hint": "supply 'base', or use a single-point preset",
+                "single_point_presets": _single_point_presets(),
+            },
+        )
+
     job = uuid.uuid4().hex[:12]
     work = Path(tempfile.mkdtemp(prefix=f"solve-{job}-"))
     try:
@@ -191,9 +274,11 @@ async def solve(
         inputs.append(str(nav_p))
 
         out = work / "solution.pos"
-        args = [RNX2RTKP, "-k", str(conf), "-o", str(out)]
-        if stat:
-            args += ["-y", "2"]
+        # -y is passed either way. The presets set out-outstat=residual, so
+        # omitting it does not mean "off" -- it means the solver writes a
+        # status file on every request that nobody reads, which on a long
+        # dataset is both large and slow.
+        args = [RNX2RTKP, "-k", str(conf), "-o", str(out), "-y", "2" if stat else "0"]
         args += inputs
 
         try:
@@ -238,6 +323,19 @@ async def solve(
         return JSONResponse(body)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _is_single_point(conf: Path) -> bool:
+    """Whether a preset solves without base observations."""
+    for line in conf.read_text().splitlines():
+        if line.strip().startswith("pos1-posmode"):
+            value = line.split("=", 1)[1].split("#", 1)[0].strip().lower()
+            return value in {"single", "0", "ppp-kine", "ppp-static", "ppp-fixed"}
+    return False
+
+
+def _single_point_presets() -> list[str]:
+    return sorted(p.stem for p in CONF_DIR.glob("*.conf") if _is_single_point(p))
 
 
 def _quality_counts(pos_text: str) -> dict:

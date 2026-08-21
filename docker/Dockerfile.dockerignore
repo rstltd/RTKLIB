@@ -1,0 +1,9 @@
+**/build/
+**/__pycache__/
+lib/librtklib.so*
+bin/*
+*.o
+# Named for the Dockerfile rather than placed at the repository root: the build
+# context IS the root, and Docker reads .dockerignore only from there. A file
+# at docker/.dockerignore is silently ignored, which is where this started.
+.git/
