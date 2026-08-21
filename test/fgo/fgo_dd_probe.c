@@ -38,6 +38,12 @@ extern void settime (gtime_t time)            { (void)time; }
 
 static int nfail=0;
 
+static int cmpint(const void *a, const void *b)
+{
+    int x=*(const int *)a,y=*(const int *)b;
+    return x<y?-1:(x>y?1:0);
+}
+
 static void check(const char *name, int ok, const char *fmt, ...)
 {
     char d[192]="";
@@ -64,6 +70,7 @@ int main(int argc, char **argv)
     double *ws=NULL,*v=NULL,*H=NULL,*R=NULL,*v2=NULL,*H2=NULL,*R2=NULL,*x=NULL;
     int *vflg=NULL,*vflg2=NULL;
     int nu=0,nr=0,i,nv,nv2,nvmax,rc,nvsel=0,nrejsel=0,*vflgsel=NULL;
+    ddres_rej_t *rejsel=NULL;
 
     memset(sta,0,sizeof(sta));
     printf("FGO double-difference callback (plan.md 3.4, gate G4)\n");
@@ -108,9 +115,10 @@ int main(int argc, char **argv)
     v2=mat(nvmax,1); H2=zeros(rtk.nx,nvmax); R2=mat(nvmax,nvmax);
     vflg=imat(nvmax,1); vflg2=imat(nvmax,1); x=mat(rtk.nx,1);
     vflgsel=imat(nvmax,1);
+    rejsel=(ddres_rej_t *)malloc(sizeof(ddres_rej_t)*DDRES_MAXREJ);
     st =(ddres_stat_t *)malloc(sizeof(ddres_stat_t));
     st2=(ddres_stat_t *)malloc(sizeof(ddres_stat_t));
-    if (!ws||!v||!H||!R||!v2||!H2||!R2||!vflg||!vflg2||!x||!st||!st2||!vflgsel) {
+    if (!ws||!v||!H||!R||!v2||!H2||!R2||!vflg||!vflg2||!x||!st||!st2||!vflgsel||!rejsel) {
         printf("  allocation failed\n"); return 2;
     }
     matcpy(x,rtk.x,rtk.nx,1);
@@ -169,6 +177,7 @@ int main(int argc, char **argv)
     nvsel=fgo_dd_eval(ctx,x,rtk.nx,ws,v,H,R,vflg,st);
     if (nvsel>0) memcpy(vflgsel,vflg,nvsel*sizeof(int));
     nrejsel=st->nrej;
+    if (nrejsel>0) memcpy(rejsel,st->rej,nrejsel*sizeof(ddres_rej_t));
 
     /* 5. freezing must decouple the row count from the state.  The
        displacement is deliberately large: a few metres only moves elevations
@@ -187,15 +196,39 @@ int main(int argc, char **argv)
         /* the frozen set must equal the set freezing SELECTED, not merely be
            self-consistent afterwards: disabling the masks so residuals stay
            computable must not let in a row that was masked out at selection */
-        /* The frozen set is every CANDIDATE the selection saw, which is the
-           rows it emitted plus the ones it dropped on the innovation
-           threshold.  Those are dropped for a state-dependent reason, so a
-           factor built from a rough initial estimate must not lose them
-           permanently; they come back flagged, for the robust kernel to
-           weight (plan.md 5.5.5). */
-        check("frozen set is exactly the selected candidates",
-              nva==nvsel+nrejsel,"emitted %d + rejected %d = %d, frozen %d",
-              nvsel,nrejsel,nvsel+nrejsel,nva);
+        /* The frozen set is every CANDIDATE the selection saw: the rows it
+           emitted plus the ones it dropped on the innovation threshold.
+           Those are dropped for a state-dependent reason, so a factor built
+           from a rough initial estimate must not lose them permanently; they
+           come back flagged, for the robust kernel to weight (plan.md 5.5.5).
+
+           Compared by identity, not by count -- swapping a selected row for a
+           previously masked-out one would leave the count untouched.
+
+           Coverage limit worth naming: this dataset cannot produce that swap.
+           selsat() has already filtered on base elevation, and over a 3.3 km
+           baseline no satellite sits close enough to the mask for the rover
+           to disagree.  Removing the membership gate from ddres_core()
+           therefore still passes here.  The check is real -- dropping a row
+           from the frozen set fails it -- but exercising the gate itself
+           needs data with a satellite near the mask boundary. */
+        {
+            int *want=imat(nvsel+nrejsel>0?nvsel+nrejsel:1,1);
+            int *got=imat(nva>0?nva:1,1),nw=0,same;
+            for (k=0;k<nvsel;k++) want[nw++]=vflgsel[k];
+            for (k=0;k<nrejsel;k++) {
+                want[nw++]=((int)rejsel[k].sat_i<<16)|((int)rejsel[k].sat_j<<8)|
+                           ((int)rejsel[k].code<<4)|(int)rejsel[k].frq;
+            }
+            for (k=0;k<nva;k++) got[k]=vflg[k];
+            qsort(want,nw,sizeof(int),cmpint);
+            qsort(got,nva>0?nva:0,sizeof(int),cmpint);
+            same=(nw==nva)&&(nw==0||!memcmp(want,got,nw*sizeof(int)));
+            check("frozen rows are exactly the selected candidates",same,
+                  "emitted %d + rejected %d = %d, frozen %d%s",
+                  nvsel,nrejsel,nw,nva,same?"":" (identities differ)");
+            free(want); free(got);
+        }
         snprintf(d,sizeof d,"nv=%d",nva);
         for (k=0;k<(int)(sizeof(disp)/sizeof(disp[0]))&&ok;k++) {
             matcpy(x,rtk.x,rtk.nx,1);
@@ -231,7 +264,7 @@ int main(int argc, char **argv)
     }
 
     free(ws);free(v);free(H);free(R);free(v2);free(H2);free(R2);
-    free(vflg);free(vflg2);free(vflgsel);free(x);free(st);free(st2);
+    free(vflg);free(vflg2);free(vflgsel);free(rejsel);free(x);free(st);free(st2);
     fgo_dd_ctx_destroy(ctx);
     rtkfree(&rtk);
     freeobs(&obs); freenav(&nav,0xFF);
