@@ -1,6 +1,9 @@
-# RTKLIB 解算服務
+# RTKLIB 解算服務 — 部署說明
 
 把 RINEX 觀測檔丟給它，回傳定位解。以 HTTP 提供，包成單一 Docker image，供內網使用。
+
+> **只是要呼叫這個 API？** 看 [`USAGE.md`](USAGE.md)，那份不含建置與部署細節，
+> 可以直接轉發給使用者。這一份是給架設與維運的人看的。
 
 ---
 
@@ -62,6 +65,8 @@ curl -s http://127.0.0.1:8000/capabilities | jq .fgo
 ---
 
 ## API
+
+完整的使用說明、程式範例與疑難排解在 [`USAGE.md`](USAGE.md)。以下只列出維運會用到的部分。
 
 ### `POST /solve`
 
