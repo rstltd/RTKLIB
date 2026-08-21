@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
 # read and set rtklib version
+#
+# file(READ) does NOT make this a configure dependency, so without the line
+# below an existing build tree keeps the VERSION and SOVERSION it was first
+# configured with: bumping VER_RTKLIB_ABI would recompile the sources but
+# still emit the OLD librtklib.so.N, letting binaries built against the old
+# ABI load the new one.  That is precisely the protection the SONAME exists
+# to provide, defeated by an incremental build.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_CURRENT_SOURCE_DIR}/src/rtklib.h")
 file(READ "src/rtklib.h" ver)
 
 string(REGEX MATCH "VER_RTKLIB[ ]+\"([a-zA-Z0-9]*)\"" _ ${ver})
