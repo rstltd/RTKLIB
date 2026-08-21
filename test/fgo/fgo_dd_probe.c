@@ -163,19 +163,52 @@ int main(int argc, char **argv)
         }
     }
 
-    /* 5. freezing must decouple the row count from the state */
-    rc=fgo_dd_freeze_pairs(ctx);
+    /* 5. freezing must decouple the row count from the state.  The
+       displacement is deliberately large: a few metres only moves elevations
+       by microdegrees, so it would not exercise the elevation and SNR masks
+       inside zdres() that are the harder half of the problem. */
+    rc=fgo_dd_freeze_pairs(ctx,rtk.x);
     if (rc!=FGO_OK) {
         check("freezing fixes the row count",0,"freeze rc=%d",rc);
     }
     else {
-        int nva,nvb;
+        static const double disp[]={5.0,1.0e3,1.0e5,3.0e6};
+        int nva,nvb,k,ok=1;
+        char d[128];
         matcpy(x,rtk.x,rtk.nx,1);
         nva=fgo_dd_eval(ctx,x,rtk.nx,ws,v,H,R,vflg,st);
-        x[0]+=5.0; x[1]+=5.0; x[2]+=5.0;   /* far past any innovation threshold */
-        nvb=fgo_dd_eval(ctx,x,rtk.nx,ws,v2,H2,R2,vflg2,st2);
-        check("freezing fixes the row count",nva>0&&nva==nvb,
-              "nv=%d at x, %d at x+5m",nva,nvb);
+        snprintf(d,sizeof d,"nv=%d",nva);
+        for (k=0;k<(int)(sizeof(disp)/sizeof(disp[0]))&&ok;k++) {
+            matcpy(x,rtk.x,rtk.nx,1);
+            x[0]+=disp[k]; x[1]-=disp[k]; x[2]+=disp[k];
+            nvb=fgo_dd_eval(ctx,x,rtk.nx,ws,v2,H2,R2,vflg2,st2);
+            if (nvb!=nva||memcmp(vflg,vflg2,nva*sizeof(int))) {
+                ok=0;
+                snprintf(d,sizeof d,"nv=%d at x, %d at +%.0e m",nva,nvb,disp[k]);
+            }
+        }
+        check("freezing fixes the row set, even across the masks",
+              nva>0&&ok,"%s",d);
+    }
+
+    /* 6. the context must own its inputs.  Scribble over the caller's
+       observation buffer and status, exactly as the next epoch would, and the
+       results must not move -- this is what lets a sliding-window solver
+       re-linearise a factor from an epoch that has long since passed. */
+    {
+        int nvc;
+        matcpy(x,rtk.x,rtk.nx,1);
+        nv=fgo_dd_eval(ctx,x,rtk.nx,ws,v,H,R,vflg,st);
+        memset(obs.data,0,sizeof(obsd_t)*(size_t)(nu+nr));
+        memset(rtk.ssat,0,sizeof(rtk.ssat));
+        for (i=0;i<3;i++) rtk.rb[i]=0.0;
+        rtk.sol.time=t0;
+        nvc=fgo_dd_eval(ctx,x,rtk.nx,ws,v2,H2,R2,vflg2,st2);
+        check("context survives its epoch being overwritten",
+              nvc==nv && !memcmp(v,v2,nv*sizeof(double)) &&
+              !memcmp(H,H2,(size_t)nv*rtk.nx*sizeof(double)) &&
+              !memcmp(R,R2,(size_t)nv*nv*sizeof(double)),
+              "nv=%d then %d",nv,nvc);
     }
 
     free(ws);free(v);free(H);free(R);free(v2);free(H2);free(R2);

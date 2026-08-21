@@ -918,6 +918,13 @@ typedef struct {        /* DD residual evaluation context (read-only inputs) */
    Use ddres_ctx_init() to start from a zeroed context so that the same hazard
    does not arise for frozen_ref or for fields added later.                  */
 
+/* Note the state covariance reaches ddres_core() as its DIAGONAL only, nx
+   entries rather than nx*nx.  That is all the code ever reads -- the
+   innovation-threshold relaxation and the baseline constraint both index
+   P[i+i*nx] -- and it keeps the cost of a retained per-epoch context linear
+   in the state dimension instead of quadratic, which matters once a
+   sliding-window solver holds hundreds of them.                            */
+
 typedef struct {        /* rejected double difference (for diagnostics) */
     int16_t sat_i;      /* reference satellite number */
     int16_t sat_j;      /* other satellite number */

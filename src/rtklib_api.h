@@ -509,7 +509,7 @@ EXPORT void   rtk_ddcov(const int *nb, int n, const double *Ri,
    of double differences.                                                    */
 EXPORT void   ddres_ctx_init(ddres_ctx_t *ctx);
 EXPORT int    ddres_core(const ddres_ctx_t *ctx, const double *x,
-                         const double *P, double *ws, double *v, double *H,
+                         const double *Pdiag, double *ws, double *v, double *H,
                          double *R, int *vflg, ddres_stat_t *st);
 /* doubles of scratch ddres_core() needs for ns satellites and nf frequencies.
    Pass a buffer of at least that size as its ws argument to keep an optimiser's

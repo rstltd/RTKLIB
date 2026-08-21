@@ -49,7 +49,7 @@
 *-----------------------------------------------------------------------------*/
 #include <stdarg.h>
 #include "rtklib.h"
-#include "rtklib_fgo_api.h"
+#include "fgo/rtklib_fgo_api.h"
 
 /* algorithm configuration -------------------------------------------------- */
 #define STD_PREC_VAR_THRESH 0  /* pos variance threshold to skip standard precision */
@@ -1162,7 +1162,7 @@ EXPORT void ddcov(const int *nb, int n, const double *Ri, const double *Rj,
 }
 /* baseline length constraint ------------------------------------------------*/
 static int constbl(const prcopt_t *opt, const double *rb, int nx,
-                   const double *x, const double *P, double *v,
+                   const double *x, const double *Pdiag, double *v,
                    double *H, double *Ri, double *Rj, int index)
 {
     const double thres=0.1; /* threshold for nonlinearity (v.2.3.0) */
@@ -1179,8 +1179,8 @@ static int constbl(const prcopt_t *opt, const double *rb, int nx,
     bb=norm(b,3);
 
     /* approximate variance of solution */
-    if (P) {
-        for (i=0;i<3;i++) var+=P[i+i*nx];
+    if (Pdiag) {
+        for (i=0;i<3;i++) var+=Pdiag[i];
         var/=3.0;
     }
     /* check nonlinearity */
@@ -1262,9 +1262,9 @@ EXPORT void ddres_ctx_init(ddres_ctx_t *ctx)
     memset(ctx,0,sizeof(*ctx));
 }
 /* double-differenced residuals, Jacobian and covariance at an arbitrary state */
-EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x, const double *P,
-                      double *ws, double *v, double *H, double *R, int *vflg,
-                      ddres_stat_t *st)
+EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x,
+                      const double *Pdiag, double *ws, double *v, double *H,
+                      double *R, int *vflg, ddres_stat_t *st)
 {
     const prcopt_t *opt=ctx->opt;
     const obsd_t *obs=ctx->obs;
@@ -1480,8 +1480,8 @@ EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x, const double *P,
                   // Open up outlier threshold if one of the phase biases was just initialized.
                   int ii = IB(sat[i], frq, opt);
                   int jj = IB(sat[j], frq, opt);
-                  if (P[ii + nx * ii] == SQR(opt->std[0]) ||
-                      P[jj + nx * jj] == SQR(opt->std[0]))
+                  if (Pdiag[ii] == SQR(opt->std[0]) ||
+                      Pdiag[jj] == SQR(opt->std[0]))
                     threshadj = 10;
                 }
                 /* if residual too large, flag as outlier */
@@ -1538,7 +1538,7 @@ EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x, const double *P,
                 if (opt->mode>PMODE_DGPS) {
                     int jj = IB(sat[j], frq, opt);
                     xjj = x[jj];
-                    Pjj = P[jj + jj * nx];
+                    Pjj = Pdiag[jj];
                 }
                 trace(3,"sat=%3d-%3d %s%d v=%13.3f R=%9.6f %9.6f icb=%9.3f lock=%5d x=%9.3f P=%.3f\n",
                         sat[i],sat[j],code?"P":"L",frq+1,v[nv],Ri[nv],Rj[nv],icb,
@@ -1554,7 +1554,7 @@ EXPORT int ddres_core(const ddres_ctx_t *ctx, const double *x, const double *P,
 
     /* baseline length constraint, for fixed distance between base and rover */
     if (opt->baseline[0]>0.0&&
-        constbl(opt,ctx->rb,nx,x,P,v,H,Ri,Rj,nv)) {
+        constbl(opt,ctx->rb,nx,x,Pdiag,v,H,Ri,Rj,nv)) {
         vflg[nv++]=3<<4;
         nb[b++]++;
     }
@@ -1587,6 +1587,7 @@ static int ddres(rtk_t *rtk, const obsd_t *obs, double dt, const double *x,
 {
     ddres_ctx_t ctx;
     ddres_stat_t *st;
+    double *Pdiag;
     int i,j,nv;
 
     /* on the heap rather than the stack: ddres_stat_t is tens of kilobytes,
@@ -1595,6 +1596,13 @@ static int ddres(rtk_t *rtk, const obsd_t *obs, double dt, const double *x,
         trace(1,"ddres : memory allocation error\n");
         return 0;
     }
+    /* only the diagonal of P is ever read, so that is all the core takes */
+    if (!(Pdiag=mat(rtk->nx,1))) {
+        free(st);
+        trace(1,"ddres : memory allocation error\n");
+        return 0;
+    }
+    for (i=0;i<rtk->nx;i++) Pdiag[i]=P?P[i+i*rtk->nx]:0.0;
     /* zero first: any field added to ddres_ctx_t later then defaults to
        NULL/0 rather than to whatever was on the stack */
     ddres_ctx_init(&ctx);
@@ -1607,7 +1615,7 @@ static int ddres(rtk_t *rtk, const obsd_t *obs, double dt, const double *x,
 
     /* NULL scratch: the EKF calls this a few times per epoch, so the internal
        allocation is irrelevant here.  An optimiser passes its own. */
-    nv=ddres_core(&ctx,x,P,NULL,v,H,R,vflg,st);
+    nv=ddres_core(&ctx,x,Pdiag,NULL,v,H,R,vflg,st);
 
     /* apply the side effects the original had */
     for (i=0;i<MAXSAT;i++) for (j=0;j<NFREQ;j++) {
@@ -1622,7 +1630,7 @@ static int ddres(rtk_t *rtk, const obsd_t *obs, double dt, const double *x,
         errmsg(rtk,"outlier rejected (sat=%3d-%3d %s%d v=%.3f)\n",
                rj->sat_i,rj->sat_j,rj->code?"P":"L",rj->frq+1,rj->v);
     }
-    free(st);
+    free(st); free(Pdiag);
     return nv;
 }
 // Time-interpolation of residuals (for post-processing solutions)
@@ -1712,10 +1720,29 @@ static double intpres(gtime_t time, const obsd_t *obs, int n, const nav_t *nav, 
  * hold whatever the last EKF epoch left, which affects only which satellite
  * fgo_dd_freeze_pairs() picks as a reference, never the residuals themselves.
  *---------------------------------------------------------------------------*/
+/* A context OWNS everything it needs.  A sliding-window or incremental solver
+   re-linearises factors from earlier epochs long after those epochs are gone,
+   and every input here is otherwise transient: rtksvr reuses one obs buffer,
+   and rtk->ssat, rtk->P, rtk->sol and even rtk->opt are updated as processing
+   continues.  Borrowing them would make an old factor silently evaluate newer
+   observations, and would race an asynchronous worker (plan.md 4.7.2).
+   The nav_t is the exception: ephemerides accumulate and are not rewritten in
+   place, and copying one would be far more expensive than the rest combined.
+
+   Cost is roughly 220 KB per epoch, dominated by the ssat snapshot; a
+   300-second window is therefore tens of megabytes.  If that ever binds, the
+   ssat copy is the thing to compact -- ddres_core() reads only sys, slip,
+   lock, snr_rover, snr_base and icbias from it. */
 struct fgo_dd_ctx_tag {
-    rtk_t *rtk;             /* owner; read-only after create */
-    const nav_t *nav;
-    const obsd_t *obs;      /* nu rover observations then nr base ones */
+    const nav_t *nav;       /* not copied; see above */
+    obsd_t *obs;            /* owned: nu rover observations then nr base ones */
+    prcopt_t opt;           /* owned snapshot */
+    prcopt_t opt_zd;        /* as opt, but with the state-dependent masks off;
+                               used for zdres() once the pairing is frozen */
+    ssat_t *ssat;           /* owned snapshot, MAXSAT entries */
+    double *Pdiag;          /* owned snapshot of diag(P), nx entries */
+    double rb[6];           /* owned snapshot of the base position */
+    gtime_t soltime;        /* owned snapshot */
     int nu,nr,n;            /* observation counts */
     int ns;                 /* common satellites */
     int nf;                 /* frequencies, NF(opt) */
@@ -1749,6 +1776,7 @@ extern void fgo_dd_ctx_destroy(fgo_dd_ctx_t *ctx)
     if (!ctx) return;
     free(ctx->rs); free(ctx->dts); free(ctx->var); free(ctx->svh);
     free(ctx->y); free(ctx->e); free(ctx->azel); free(ctx->freq);
+    free(ctx->obs); free(ctx->ssat); free(ctx->Pdiag);
     free(ctx);
 }
 extern int fgo_dd_ctx_create(fgo_dd_ctx_t **ctx, rtk_t *rtk,
@@ -1769,16 +1797,35 @@ extern int fgo_dd_ctx_create(fgo_dd_ctx_t **ctx, rtk_t *rtk,
     time=obs[0].time;
 
     if (!(c=(fgo_dd_ctx_t *)calloc(1,sizeof(fgo_dd_ctx_t)))) return FGO_ERR_NOMEM;
-    c->rtk=rtk; c->nav=nav; c->obs=obs;
+    c->nav=nav;
     c->nu=nu; c->nr=nr; c->n=n; c->nf=nf; c->nx=rtk->nx;
+    c->opt=*opt;
+    c->soltime=rtk->sol.time;
+    for (i=0;i<6;i++) c->rb[i]=rtk->rb[i];
 
     c->rs  =mat(6,n);      c->dts =mat(2,n);      c->var =mat(1,n);
     c->y   =mat(nf*2,n);   c->e   =mat(3,n);      c->azel=zeros(2,n);
     c->freq=zeros(nf,n);   c->svh =imat(n,1);
-    if (!c->rs||!c->dts||!c->var||!c->y||!c->e||!c->azel||!c->freq||!c->svh) {
+    c->obs =(obsd_t *)malloc(sizeof(obsd_t)*(size_t)n);
+    c->ssat=(ssat_t *)malloc(sizeof(ssat_t)*MAXSAT);
+    c->Pdiag=mat(rtk->nx,1);
+    if (!c->rs||!c->dts||!c->var||!c->y||!c->e||!c->azel||!c->freq||!c->svh||
+        !c->obs||!c->ssat||!c->Pdiag) {
         fgo_dd_ctx_destroy(c);
         return FGO_ERR_NOMEM;
     }
+    memcpy(c->obs,obs,sizeof(obsd_t)*(size_t)n);
+    for (i=0;i<rtk->nx;i++) c->Pdiag[i]=rtk->P?rtk->P[i+i*rtk->nx]:0.0;
+
+    /* zdres() masks on elevation and SNR, both of which move with the state.
+       Once the pairing is frozen the observation set must stop changing, so
+       the relinearisation pass uses a copy with those masks disabled -- the
+       selection decision was already made, at create and freeze time.  This is
+       what actually keeps a factor's dimension fixed; freezing the reference
+       satellite alone does not (plan.md 4.2.1). */
+    c->opt_zd=*opt;
+    c->opt_zd.elmin=-PI/2.0;
+    memset(&c->opt_zd.snrmask,0,sizeof(c->opt_zd.snrmask));
     /* mirror relpos(): the system id and SNR fields feed varerr() and the
        reference-satellite search inside ddres_core() */
     for (i=0;i<MAXSAT;i++) {
@@ -1789,27 +1836,30 @@ extern int fgo_dd_ctx_create(fgo_dd_ctx_t **ctx, rtk_t *rtk,
             rtk->ssat[i].snr_base[j]=0;
         }
     }
-    satposs(time,obs,n,nav,opt->sateph,c->rs,c->dts,c->var,c->svh);
+    satposs(time,c->obs,n,nav,opt->sateph,c->rs,c->dts,c->var,c->svh);
 
     /* base residuals: fixed for the epoch, since rtk->rb does not move */
-    if (!zdres(1,obs+nu,nr,c->rs+nu*6,c->dts+nu*2,c->var+nu,c->svh+nu,nav,
-               rtk->rb,opt,c->y+nu*nf*2,c->e+nu*3,c->azel+nu*2,c->freq+nu*nf)) {
+    if (!zdres(1,c->obs+nu,nr,c->rs+nu*6,c->dts+nu*2,c->var+nu,c->svh+nu,nav,
+               c->rb,opt,c->y+nu*nf*2,c->e+nu*3,c->azel+nu*2,c->freq+nu*nf)) {
         trace(2,"fgo: base station position error\n");
         fgo_dd_ctx_destroy(c);
         return FGO_ERR_BADARG;
     }
-    c->dt=opt->intpref?intpres(time,obs+nu,nr,nav,rtk,c->y+nu*nf*2):
-                       timediff(time,obs[nu].time);
+    c->dt=opt->intpref?intpres(time,c->obs+nu,nr,nav,rtk,c->y+nu*nf*2):
+                       timediff(time,c->obs[nu].time);
 
-    if ((c->ns=selsat(obs,c->azel,nu,nr,opt,c->sat,c->iu,c->ir))<=0) {
+    if ((c->ns=selsat(c->obs,c->azel,nu,nr,opt,c->sat,c->iu,c->ir))<=0) {
         trace(2,"fgo: no common satellite\n");
         fgo_dd_ctx_destroy(c);
         return FGO_ERR_BADARG;
     }
     for (i=0;i<c->ns;i++) for (j=0;j<nf;j++) {
-        rtk->ssat[c->sat[i]-1].snr_rover[j]=obs[c->iu[i]].SNR[j];
-        rtk->ssat[c->sat[i]-1].snr_base[j] =obs[c->ir[i]].SNR[j];
+        rtk->ssat[c->sat[i]-1].snr_rover[j]=c->obs[c->iu[i]].SNR[j];
+        rtk->ssat[c->sat[i]-1].snr_base[j] =c->obs[c->ir[i]].SNR[j];
     }
+    /* snapshot ssat only now, with sys and the SNR fields populated */
+    memcpy(c->ssat,rtk->ssat,sizeof(ssat_t)*MAXSAT);
+
     for (i=0;i<DDRES_MAXBLK;i++) c->ref[i]=-1;
     c->frozen=0;
 
@@ -1836,8 +1886,8 @@ static double *fgo_dd_setup(const fgo_dd_ctx_t *ctx, double *ws,
     matcpy(freq,ctx->freq,nf,  n);
 
     ddres_ctx_init(dc);
-    dc->opt=&ctx->rtk->opt; dc->obs=ctx->obs; dc->ssat=ctx->rtk->ssat;
-    dc->rb=ctx->rtk->rb; dc->soltime=ctx->rtk->sol.time; dc->dt=ctx->dt;
+    dc->opt=&ctx->opt; dc->obs=ctx->obs; dc->ssat=ctx->ssat;
+    dc->rb=ctx->rb; dc->soltime=ctx->soltime; dc->dt=ctx->dt;
     dc->y=y; dc->e=e; dc->azel=azel; dc->freq=freq;
     dc->sat=ctx->sat; dc->iu=ctx->iu; dc->ir=ctx->ir;
     dc->ns=ctx->ns; dc->nx=ctx->nx;
@@ -1861,21 +1911,22 @@ extern int fgo_dd_eval(const fgo_dd_ctx_t *ctx, const double *x, int nx,
     y=ws; e=y+ctx->nf*2*n; azel=e+3*n; freq=azel+2*n;
 
     /* the relinearisation: geometry, elevation, troposphere mapping and
-       antenna correction are all recomputed at x */
+       antenna correction are all recomputed at x.  Once frozen, the masked
+       variant keeps the observation set from moving with the state. */
     if (!zdres(0,ctx->obs,ctx->nu,ctx->rs,ctx->dts,ctx->var,ctx->svh,ctx->nav,
-               x,&ctx->rtk->opt,y,e,azel,freq)) {
+               x,ctx->frozen?&ctx->opt_zd:&ctx->opt,y,e,azel,freq)) {
         trace(2,"fgo: rover position error in eval\n");
         return FGO_ERR_BADARG;
     }
-    return ddres_core(&dc,x,ctx->rtk->P,rest,v,H,R,vflg,st);
+    return ddres_core(&dc,x,ctx->Pdiag,rest,v,H,R,vflg,st);
 }
-extern int fgo_dd_freeze_pairs(fgo_dd_ctx_t *ctx)
+extern int fgo_dd_freeze_pairs(fgo_dd_ctx_t *ctx, const double *x)
 {
     ddres_stat_t *st;
     double *ws,*v,*H,*R;
     int *vflg,nv,ny,i;
 
-    if (!ctx) return FGO_ERR_BADARG;
+    if (!ctx||!x) return FGO_ERR_BADARG;
     if (ctx->frozen) return FGO_OK;     /* idempotent */
 
     /* called once per epoch, so allocating here is not on the hot path */
@@ -1887,8 +1938,8 @@ extern int fgo_dd_freeze_pairs(fgo_dd_ctx_t *ctx)
         free(st); free(ws); free(v); free(H); free(R); free(vflg);
         return FGO_ERR_NOMEM;
     }
-    /* run once in dynamic mode at the current estimate and keep the choice */
-    nv=fgo_dd_eval(ctx,ctx->rtk->x,ctx->nx,ws,v,H,R,vflg,st);
+    /* run once in dynamic mode at the given state and keep the choice */
+    nv=fgo_dd_eval(ctx,x,ctx->nx,ws,v,H,R,vflg,st);
     if (nv>=0) {
         for (i=0;i<DDRES_MAXBLK;i++) ctx->ref[i]=st->ref[i];
         ctx->frozen=1;

@@ -120,17 +120,35 @@ typedef struct fgo_pr_ctx_tag fgo_pr_ctx_t;  /* undifferenced-range context */
 
 /* Build a context for one epoch: satellite positions, the common satellite
    set and the undifferenced residuals -- everything that does not depend on
-   the state vector.  *ctx is set to NULL on failure.                        */
+   the state vector.  *ctx is set to NULL on failure.
+
+   The context COPIES every epoch-dependent input it needs, so it stays valid
+   after rtk and the observation buffer have moved on.  That is what lets a
+   sliding-window or incremental solver re-linearise an old factor.  The only
+   borrowed input is nav, whose ephemerides accumulate rather than being
+   rewritten in place, and which must therefore outlive the context.
+
+   This call does update rtk->ssat -- the system id, the valid flags and the
+   SNR fields -- exactly as relpos() does, because the ambiguity resolution
+   that follows a solve reads them.  fgo_dd_eval() by contrast touches nothing
+   outside its own outputs.                                                  */
 EXPORT int  fgo_dd_ctx_create (fgo_dd_ctx_t **ctx, rtk_t *rtk,
                                const obsd_t *obs, int nu, int nr,
                                const nav_t *nav);
 EXPORT void fgo_dd_ctx_destroy(fgo_dd_ctx_t *ctx);
 
-/* Fix the reference satellite of every double-difference block, so that the
-   number and meaning of the rows fgo_dd_eval() returns stop depending on the
-   state.  A factor's dimension is fixed when it is built, so this must be
-   called before the first evaluation (plan.md 4.2.1).                       */
-EXPORT int  fgo_dd_freeze_pairs(fgo_dd_ctx_t *ctx);
+/* Fix the observation set, so that the number and meaning of the rows
+   fgo_dd_eval() returns stop depending on the state.  A factor's dimension is
+   fixed when it is built, so this must be called before the first evaluation
+   (plan.md 4.2.1).  x is the state the selection is made at, normally the
+   current best estimate.
+
+   Two things are frozen, and both are needed.  The reference satellite of each
+   block would otherwise be re-chosen by minimum variance; and zdres() masks on
+   elevation and SNR, both of which move with the state, so an iterate that
+   carries a satellite across the mask would silently drop its rows.  After
+   this call the masks are not re-applied.                                   */
+EXPORT int  fgo_dd_freeze_pairs(fgo_dd_ctx_t *ctx, const double *x);
 
 /* Re-evaluate the double-differenced residuals and their Jacobian at state x.
    Returns the number of rows written, or a negative error code.
