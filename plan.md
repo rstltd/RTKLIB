@@ -695,6 +695,20 @@ gtsam::Vector GnssDDFactor::evaluateError(
 
 **所有 Jacobian 皆直接取自 RTKLIB 既有程式碼，FGO 端零推導、零重寫**（滿足 I3）。
 
+**近似的量化（已實測，2026-08-21）**：RTKLIB 的位置 Jacobian 是**純幾何**的（`-e_i + e_j`），但 `zdres()` 中另有兩項也依賴測站位置，且未被納入 Jacobian。以 `numericalDerivative` 對照解析 Jacobian，逐項移除後量測到的相對誤差為：
+
+| 被忽略的項 | 相對誤差 |
+|---|---|
+| 對流層乾延遲對測站高度的偏導 | **4.1e-4** |
+| `geodist()` 內的 Sagnac 項對測站位置的偏導 | 6.0e-6 |
+| （兩者皆移除後的殘餘＝數值極限） | ~6e-6 |
+
+對流層項為主因。**注意 `zdres()` 是無條件套用 `mapfh*zhd` 的**——`opt->tropopt` 只決定 `ddres()` 是否**估計**對流層狀態，並不控制模型延遲是否套用，因此把 `tropopt` 設為 `off` 並不會移除此項（這一點在調查中一度造成誤判）。ZHD 隨高度約以 −2.9e-4 m/m 衰減，而高低仰角衛星的 mapping function 差異使 DD 無法抵消。
+
+**這對 FGO 是可接受的**：Gauss-Newton 使用近似 Jacobian 只影響收斂**速率**，不影響收斂**位置**，因為殘差本身是精確的。實務影響是每個 epoch 可能多一兩次迭代。
+
+**但它界定了 §6.11 G4 的合理門檻**：Jacobian 對數值微分的相對誤差不可能優於 ~4e-4，訂在 1e-6 是不可達成的。`test/fgo/check_fgo_backend.sh` 採用 2e-3。若未來要追求 mm 等級並在意收斂速率，補上 `∂(mapfh·zhd)/∂r` 是明確的改進點。
+
 #### 協方差（Covariance）
 
 由 `varerr()` (`rtkpos.c:406`) 產生每個 SD 的變異數 `σ²`，再由 `ddcov()` (`rtkpos.c:1128`) 組成 DD 協方差矩陣。`ddcov()` 的實際公式為：

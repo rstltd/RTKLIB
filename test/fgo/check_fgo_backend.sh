@@ -128,15 +128,25 @@ rtkdefs=$(sed -n 's/^add_definitions(\(-D.*\))$/\1/p' "$RTKLIB_ROOT/CMakeLists.t
 }
 echo "  using library macros: $rtkdefs"
 # shellcheck disable=SC2086
+# GTSAM's own headers do not survive -Wextra -pedantic cleanly, so they come
+# in via -isystem; the probe's own code is still held to the strict flags.
+#
+# TBB is a transitive dependency: the conda GTSAM is built with it, so header
+# code instantiated here (the factor templates) pulls in tbb allocators that
+# libgtsam alone does not satisfy.  A CMake consumer gets this automatically
+# from the GTSAM target; a hand-built probe has to say it.
 "$cxx" -std=c++17 -Wall -Wextra -pedantic \
-    -I"$RTKLIB_ROOT/src" -I"$RTKLIB_ROOT/src/fgo" -I"$prefix/include" \
-    -I"$prefix/include/eigen3" $rtkdefs \
+    -I"$RTKLIB_ROOT/src" -I"$RTKLIB_ROOT/src/fgo" \
+    -isystem "$prefix/include" -isystem "$prefix/include/eigen3" $rtkdefs \
     "$here/fgo_backend_probe.cpp" \
     -L"$RTKLIB_ROOT/lib" -Wl,-rpath,"$RTKLIB_ROOT/lib" \
     -L"$prefix/lib" -Wl,-rpath,"$prefix/lib" \
-    -lrtklib -lgtsam -lm -o "$work/probe" 2>"$work/e" || {
+    -lrtklib -lgtsam -lgtsam_unstable -ltbb -ltbbmalloc -lm \
+    -o "$work/probe" 2>"$work/e" || {
     echo "  FAIL compile/link"; sed 's/^/      /' "$work/e" | head -20; exit 1; }
-"$work/probe" || bad=$((bad+1))
+data=$RTKLIB_ROOT/test/data/rinex
+"$work/probe" "$data/07590920.05o" "$data/30400920.05o" "$data/30400920.05n" ||
+    bad=$((bad+1))
 
 # ---- 3. the OFF build must stay free of the C++ runtime --------------------
 echo "== ENABLE_FGO=OFF stays pure C =="

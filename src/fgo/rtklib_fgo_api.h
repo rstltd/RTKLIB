@@ -174,6 +174,11 @@ EXPORT int  fgo_dd_nvmax(const fgo_dd_ctx_t *ctx);
 /* Doubles of scratch fgo_dd_eval() needs for this context.                  */
 EXPORT int  fgo_dd_ws_size(const fgo_dd_ctx_t *ctx);
 
+/* The positioning mode the context was built for, as a PMODE_* value.  Callers
+   need it because it decides whether the context emits carrier phase rows at
+   all, and therefore whether phase bias states are involved.                */
+EXPORT int  fgo_dd_mode(const fgo_dd_ctx_t *ctx);
+
 /* Undifferenced pseudorange equivalents (plan.md 4.2.2).                    */
 EXPORT int  fgo_pr_ctx_create (fgo_pr_ctx_t **ctx, rtk_t *rtk,
                                const obsd_t *obs, int n, const nav_t *nav);

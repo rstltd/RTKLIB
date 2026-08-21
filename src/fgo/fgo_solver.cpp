@@ -17,7 +17,7 @@
 * version : $Revision:$ $Date:$
 * history : 2026/08/21 1.0 new
 *-----------------------------------------------------------------------------*/
-#include "rtklib_fgo_api.h"
+#include "fgo_rtklib.h"
 #include "fgo_config.h"
 
 #include <exception>
@@ -31,13 +31,13 @@
 #define FGO_BOUNDARY_BEGIN try {
 #define FGO_BOUNDARY_END(retexpr)                                              \
     } catch (const std::bad_alloc &) {                                         \
-        trace(1, "fgo: out of memory\n");                                      \
+        fgo_trace(1, "fgo: out of memory\n");                                      \
         return retexpr(FGO_ERR_NOMEM);                                         \
     } catch (const std::exception &e) {                                        \
-        trace(1, "fgo: %s\n", e.what());                                       \
+        fgo_trace(1, "fgo: %s\n", e.what());                                       \
         return retexpr(FGO_ERR_INTERNAL);                                      \
     } catch (...) {                                                            \
-        trace(1, "fgo: unknown exception\n");                                  \
+        fgo_trace(1, "fgo: unknown exception\n");                                  \
         return retexpr(FGO_ERR_INTERNAL);                                      \
     }
 #define FGO_RET_INT(code)  (code)
@@ -83,7 +83,7 @@ Config Config::fromPrcopt(const prcopt_t &opt)
     c.robust.scaleMax = opt.fgo_scaleclamp[1] > 0.0 ? opt.fgo_scaleclamp[1]
                                                     : FGO_DEF_SCALEMAX;
     if (c.robust.scaleMax < c.robust.scaleMin) {
-        trace(2, "fgo: scale clamp reversed (%.3f > %.3f), using defaults\n",
+        fgo_trace(2, "fgo: scale clamp reversed (%.3f > %.3f), using defaults\n",
               c.robust.scaleMin, c.robust.scaleMax);
         c.robust.scaleMin = FGO_DEF_SCALEMIN;
         c.robust.scaleMax = FGO_DEF_SCALEMAX;
@@ -163,7 +163,7 @@ extern "C" int fgo_init(rtk_t *rtk, const prcopt_t *opt)
            successfully created. */
         std::unique_ptr<fgo::Solver> s(new fgo::Solver(*opt));
         const std::string summary = s->config().describe();
-        trace(2, "fgo: init %s\n", summary.c_str());
+        fgo_trace(2, "fgo: init %s\n", summary.c_str());
         rtk->fgo = s.release();
         return FGO_OK;
     FGO_BOUNDARY_END(FGO_RET_INT)

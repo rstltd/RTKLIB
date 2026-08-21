@@ -11,8 +11,19 @@
 * version : $Revision:$ $Date:$
 * history : 2026/08/21 1.0 new
 *-----------------------------------------------------------------------------*/
-#include "rtklib_fgo_api.h"
+#include "fgo_rtklib.h"
 #include "fgo_config.h"
+#include "fgo_factor.h"
+
+#include <gtsam/base/numericalDerivative.h>
+#include <gtsam/nonlinear/NonlinearFactorGraph.h>
+#include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
+#include <gtsam/slam/PriorFactor.h>
+
+#include <algorithm>
+#include <cmath>
+#include <functional>
+#include <vector>
 
 #include <cstdio>
 #include <cstdarg>
@@ -30,7 +41,7 @@ static void check(const char *name, bool ok, const char *fmt = nullptr, ...)
     if (!ok) nfail++;
 }
 
-int main()
+int main(int argc, char **argv)
 {
     std::printf("FGO backend (ENABLE_FGO=ON)\n");
 
@@ -162,6 +173,170 @@ int main()
             (void)fgo::keyGloIcb(NFREQ - 1);
         } catch (const std::exception &) { edges = false; }
         check("valid boundary components are accepted", edges);
+    }
+
+    /* ---- the factor, on real observations -------------------------------
+       This is gate G4's central check (plan.md 6.11): the analytic Jacobian
+       against GTSAM's own numerical derivative.  A sign error here produces a
+       Jacobian of the right magnitude pointing the wrong way, which converges
+       to the wrong answer without ever failing loudly. */
+    if (argc > 3) {
+        obs_t obs = {};
+        nav_t nav = {};
+        sta_t sta[2];
+        gtime_t t0 = {};
+        std::memset(sta, 0, sizeof sta);
+
+        if (readrnxt(argv[1], 1, t0, t0, 0.0, "", &obs, &nav, sta + 0) < 0 ||
+            readrnxt(argv[2], 2, t0, t0, 0.0, "", &obs, &nav, sta + 1) < 0 ||
+            readrnxt(argv[3], 1, t0, t0, 0.0, "", nullptr, &nav, nullptr) < 0) {
+            check("factor: sample observations readable", false);
+        }
+        else {
+            sortobs(&obs);
+            uniqnav(&nav);
+            int nu = 0, nr = 0;
+            for (int i = 0; i < obs.n &&
+                 timediff(obs.data[i].time, obs.data[0].time) == 0.0; i++) {
+                if (obs.data[i].rcv == 1) nu++; else nr++;
+            }
+
+            rtk_t r2;
+            prcopt_t o2 = prcopt_default;
+            /* Code only.  A carrier phase mode would need bias variables the
+               factor does not yet provide, and with the baseline biases at
+               zero the phase residuals are of order 1e7 m -- the optimizer
+               then moves the position thousands of kilometres to fit them.
+               DGPS is the configuration this factor is currently complete
+               for, and it is a real one. */
+            o2.mode = PMODE_DGPS; o2.nf = 2; o2.navsys = SYS_GPS;
+            o2.elmin = 15.0 * D2R; o2.ionoopt = IONOOPT_BRDC;
+            o2.tropopt = TROPOPT_SAAS; o2.modear = ARMODE_CONT;
+            rtkinit(&r2, &o2);
+            for (int i = 0; i < 3; i++) {
+                r2.rb[i] = sta[1].pos[i];
+                r2.x[i]  = sta[0].pos[i];
+            }
+            r2.sol.time = obs.data[0].time;
+
+            fgo_dd_ctx_t *ctx = nullptr;
+            int rc2 = fgo_dd_ctx_create(&ctx, &r2, obs.data, nu, nr, &nav);
+            if (rc2 == FGO_OK) rc2 = fgo_dd_freeze_pairs(ctx, r2.x);
+            check("factor: frozen context built", rc2 == FGO_OK, "rc=%d", rc2);
+
+            if (rc2 == FGO_OK) {
+                fgo::Config cfg = fgo::Config::fromPrcopt(o2);
+                auto f = fgo::GnssDDFactor::create(fgo::keyPos(0), ctx,
+                                                   r2.x, r2.nx, cfg);
+                check("factor: constructed with rows", f && f->rows() > 0,
+                      "rows=%d rejected=%d", f ? f->rows() : 0,
+                      f ? f->rejectedRows() : 0);
+
+                if (f) {
+                    const gtsam::Point3 p0(r2.x[0], r2.x[1], r2.x[2]);
+
+                    /* analytic */
+                    gtsam::Matrix Ja;
+                    gtsam::Vector e0 = f->evaluateError(p0, Ja);
+
+                    /* numerical, through the same callback */
+                    std::function<gtsam::Vector(const gtsam::Point3 &)> h =
+                        [&f](const gtsam::Point3 &p) {
+                            return f->evaluateError(p);
+                        };
+                    /* Step size is not arbitrary.  The residual is a small
+                       difference of ranges of order 2e7 m, so double
+                       precision leaves about 1e-8 m of noise in it; a finite
+                       difference divides that by the step, giving 1e-4
+                       relative error at a 1e-4 m step.  The truncation term
+                       is meanwhile only about h/r, so a LARGER step is more
+                       accurate here, the opposite of the usual intuition.
+                       At 1 m: rounding ~1e-8, truncation ~5e-8. */
+                    gtsam::Matrix Jn =
+                        gtsam::numericalDerivative11<gtsam::Vector, gtsam::Point3>(
+                            h, p0, 1.0);
+
+                    const double scale = Jn.cwiseAbs().maxCoeff();
+                    const double err = (Ja - Jn).cwiseAbs().maxCoeff();
+                    /* Tolerance is 2e-3, not the 1e-6 one would want, and
+                       the reason is a property of RTKLIB rather than of this
+                       factor.  RTKLIB's analytic Jacobian is purely
+                       geometric: -e_i + e_j.  Two terms in zdres() that do
+                       depend on the receiver position are left out of it.
+                       Measured by removing each and re-running:
+
+                         tropospheric hydrostatic delay   4.1e-4 relative
+                         Sagnac term inside geodist()     6.0e-6 relative
+
+                       The troposphere dominates.  zdres() applies
+                       mapfh * zhd unconditionally -- opt->tropopt governs only
+                       whether ddres() ESTIMATES a troposphere state, not
+                       whether the model delay is applied -- and zhd falls by
+                       about 2.9e-4 m per metre of height, which a double
+                       difference between a high and a low satellite does not
+                       cancel.
+
+                       This is a long-standing approximation, and a harmless
+                       one for Gauss-Newton: an approximate Jacobian costs
+                       convergence rate, not correctness, since the residual
+                       itself is exact.  It bounds how tight this check can
+                       be, and it is worth revisiting if millimetre-level work
+                       ever needs the extra rate. */
+                    std::printf("      [info] Jacobian rel err %.2e "
+                                "(RTKLIB omits d(trop)/dr, ~4e-4)\n",
+                                scale > 0 ? err / scale : 0.0);
+                    check("factor: Jacobian matches numericalDerivative",
+                          Ja.rows() == Jn.rows() && Ja.cols() == 3 &&
+                          scale > 0.1 && err / scale < 2e-3,
+                          "max|Ja-Jn|=%.3e scale=%.3f rel=%.2e",
+                          err, scale, scale > 0 ? err / scale : 0.0);
+
+                    /* A sign-flipped Jacobian would have the right magnitude,
+                       so magnitude alone proves nothing -- compare against the
+                       negation explicitly. */
+                    const double errneg = (Ja + Jn).cwiseAbs().maxCoeff();
+                    check("factor: Jacobian sign is not inverted",
+                          err < errneg, "|Ja-Jn|=%.3e |Ja+Jn|=%.3e", err, errneg);
+
+                    /* The whole point of A': moving the state must move the
+                       error, through a fresh call into RTKLIB. */
+                    gtsam::Vector e1 = f->evaluateError(
+                        gtsam::Point3(p0.x() + 1.0, p0.y(), p0.z()));
+                    check("factor: relinearises rather than replaying",
+                          (e1 - e0).cwiseAbs().maxCoeff() > 1e-3,
+                          "max|de|=%.4f m", (e1 - e0).cwiseAbs().maxCoeff());
+
+                    /* And it must solve: a graph of this factor plus a loose
+                       prior should move toward the true position. */
+                    gtsam::NonlinearFactorGraph g;
+                    g.add(f);
+                    g.addPrior(fgo::keyPos(0), p0,
+                               gtsam::noiseModel::Isotropic::Sigma(3, 100.0));
+                    gtsam::Values init;
+                    init.insert(fgo::keyPos(0),
+                                gtsam::Point3(p0.x() + 2.0, p0.y() - 2.0,
+                                              p0.z() + 2.0));
+                    gtsam::LevenbergMarquardtParams lm;
+                    lm.setMaxIterations(cfg.maxIter);
+                    gtsam::Values res =
+                        gtsam::LevenbergMarquardtOptimizer(g, init, lm).optimize();
+                    const double moved =
+                        (res.at<gtsam::Point3>(fgo::keyPos(0)) -
+                         init.at<gtsam::Point3>(fgo::keyPos(0))).norm();
+                    const double d0 =
+                        (init.at<gtsam::Point3>(fgo::keyPos(0)) - p0).norm();
+                    const double d1 =
+                        (res.at<gtsam::Point3>(fgo::keyPos(0)) - p0).norm();
+                    check("factor: optimizes toward the observations",
+                          moved > 0.1 && d1 < d0,
+                          "start %.3f m off, ended %.3f m off, moved %.3f m",
+                          d0, d1, moved);
+                }
+                fgo_dd_ctx_destroy(ctx);
+            }
+            rtkfree(&r2);
+            freeobs(&obs); freenav(&nav, 0xFF);
+        }
     }
 
     if (nfail) { std::printf("\n%d check(s) FAILED\n", nfail); return 1; }

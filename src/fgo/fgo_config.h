@@ -20,7 +20,7 @@
 #ifndef FGO_CONFIG_H
 #define FGO_CONFIG_H
 
-#include "rtklib.h"
+#include "fgo_rtklib.h"
 
 #include <gtsam/inference/Symbol.h>
 

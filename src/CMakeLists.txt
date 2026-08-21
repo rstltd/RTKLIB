@@ -32,6 +32,7 @@ option(ENABLE_FGO "Build the Factor Graph Optimization solver (requires GTSAM 4.
 # compiled and rtkpos.c never sees the difference.
 set(DIR_SRCS_FGO
     fgo/fgo_solver.cpp
+    fgo/fgo_factor.cpp
 )
 
 aux_source_directory(. DIR_SRCS_RTKLIB)
