@@ -1,0 +1,63 @@
+# RTKLIB solve service.
+#
+#   docker compose -f docker/docker-compose.yml up -d --build
+#
+# The build context is the repository root, because the image needs src/, app/
+# and the CMake files -- not just this directory.
+services:
+  rtklib-solve:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        # OFF drops GTSAM from the build. The service behaves identically
+        # either way today, since all solutions come from the EKF; it only
+        # changes what /capabilities reports and makes the build much faster.
+        ENABLE_FGO: "ON"
+    image: ${RTKLIB_IMAGE:-rtklib-solve:local}
+    container_name: rtklib-solve
+    restart: unless-stopped
+
+    # Bound to the host's own interface by default. Change to 0.0.0.0 only
+    # once you have decided how the service is reached, since it has no
+    # authentication of its own -- see docker/README.md.
+    ports:
+      - "${RTKLIB_BIND:-127.0.0.1}:${RTKLIB_PORT:-8000}:8000"
+
+    environment:
+      RTKLIB_MAX_UPLOAD_MB: "${RTKLIB_MAX_UPLOAD_MB:-256}"
+      RTKLIB_SOLVE_TIMEOUT_S: "${RTKLIB_SOLVE_TIMEOUT_S:-900}"
+      RTKLIB_SERVICE_VERSION: "${RTKLIB_SERVICE_VERSION:-dev}"
+
+    # Solving is CPU-bound and a large dataset is memory-hungry; without a cap
+    # one oversized job can take the host down with it.
+    deploy:
+      resources:
+        limits:
+          cpus: "${RTKLIB_CPUS:-2.0}"
+          memory: "${RTKLIB_MEMORY:-2g}"
+
+    # Uploads and intermediate files go to a tmpfs, so nothing a caller sends
+    # is left on disk after the request. Size it above the upload limit.
+    tmpfs:
+      - /tmp:size=${RTKLIB_TMPFS:-2g},mode=1777
+
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
