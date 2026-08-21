@@ -11,6 +11,10 @@
 #   4. the stub behaves the way rtkpos.c will need it to (test/fgo/fgo_abi_probe.c)
 #   5. a C++ translation unit links against that C stub, which is what proves
 #      the extern "C" guard is right
+#   6. the RTKLIB-side double-difference callback, on real observations
+#      (test/fgo/fgo_dd_probe.c) -- including that its Jacobian agrees with a
+#      finite difference, which is what distinguishes architecture A' from a
+#      cached linearisation
 #
 # Environment variables:
 #   FGO_CC / FGO_CXX / FGO_LDLIBS  as elsewhere
@@ -116,6 +120,15 @@ echo "== C++ links against the C stub =="
     echo "       (is the extern \"C\" guard in rtklib_fgo_api.h intact?)"
     sed 's/^/      /' "$work/e" | head -20; bad=$((bad+1)); }
 [ -x "$work/probecxx" ] && { "$work/probecxx" || bad=$((bad+1)); }
+
+echo "== double-difference callback on real data =="
+data=$RTKLIB_ROOT/test/data/rinex
+# shellcheck disable=SC2086
+"$cc" -std=c99 -Wall -Wextra -pedantic -Wno-unused-but-set-variable $INC $OPTS \
+    "$here/fgo_dd_probe.c" $objs $ldlibs -o "$work/ddprobe" 2>"$work/e" || {
+    echo "  FAIL compile/link"; sed 's/^/      /' "$work/e" | head -20; exit 1; }
+"$work/ddprobe" "$data/07590920.05o" "$data/30400920.05o" \
+                "$data/30400920.05n" || bad=$((bad+1))
 
 echo
 [ "$bad" = 0 ] || { echo "$bad check(s) failed"; exit 1; }

@@ -49,6 +49,7 @@
 *-----------------------------------------------------------------------------*/
 #include <stdarg.h>
 #include "rtklib.h"
+#include "rtklib_fgo_api.h"
 
 /* algorithm configuration -------------------------------------------------- */
 #define STD_PREC_VAR_THRESH 0  /* pos variance threshold to skip standard precision */
@@ -1681,6 +1682,219 @@ static double intpres(gtime_t time, const obsd_t *obs, int n, const nav_t *nav, 
     }
   }
   return fabs(ttb) < fabs(tt) ? ttb : tt;
+}
+/* FGO double-difference callbacks --------------------------------------------
+ *
+ * These are the RTKLIB half of architecture A' (plan.md 3.4): src/fgo/ holds a
+ * context for one epoch and re-evaluates the observation model through it at
+ * every linearisation point, so the model itself is never reimplemented.
+ *
+ * The split between what is computed once and what is recomputed is the whole
+ * point, and it follows relpos():
+ *
+ *   once, in ctx_create   satposs(), the BASE zdres(), and selsat().  None of
+ *                         these depend on the rover state -- selsat() masks on
+ *                         the base elevation only -- so recomputing them per
+ *                         iteration would be waste.
+ *
+ *   every eval            the ROVER zdres(), then ddres_core().  zdres()
+ *                         recomputes geodist(), satazel(), the troposphere
+ *                         mapping and the antenna correction at the state it
+ *                         is given, which is what makes this a true
+ *                         relinearisation rather than a cached Jacobian
+ *                         (plan.md 4.2.1, "requirement 2").
+ *
+ * NOT DONE HERE: cycle-slip detection.  relpos() gets it from udstate(), which
+ * also propagates the Kalman state and so must not run on the FGO path.  A
+ * factor graph handles a slip by starting a new bias variable rather than
+ * resetting one (plan.md 4.1.3), so this belongs with arc management in
+ * fgo_graph.cpp (plan.md 11.3 P3.9).  Until then rtk->ssat[].slip and .lock
+ * hold whatever the last EKF epoch left, which affects only which satellite
+ * fgo_dd_freeze_pairs() picks as a reference, never the residuals themselves.
+ *---------------------------------------------------------------------------*/
+struct fgo_dd_ctx_tag {
+    rtk_t *rtk;             /* owner; read-only after create */
+    const nav_t *nav;
+    const obsd_t *obs;      /* nu rover observations then nr base ones */
+    int nu,nr,n;            /* observation counts */
+    int ns;                 /* common satellites */
+    int nf;                 /* frequencies, NF(opt) */
+    int nx;                 /* state dimension at create time */
+    double dt;              /* age of differential (s) */
+    double *rs,*dts,*var;   /* satellite positions, clocks and variances */
+    int *svh;               /* satellite health */
+    double *y,*e,*azel,*freq; /* base half filled; rover half is scratch only */
+    int sat[MAXSAT],iu[MAXSAT],ir[MAXSAT];
+    int ref[DDRES_MAXBLK];  /* frozen reference satellites */
+    int frozen;             /* whether ref[] is in force */
+};
+
+/* doubles of eval scratch: a full copy of y/e/azel/freq plus ddres_core's */
+static int fgo_dd_ws_doubles(int n, int ns, int nf)
+{
+    return n*(nf*2+3+2+nf)+ddres_ws_size(ns,nf);
+}
+extern int fgo_dd_ws_size(const fgo_dd_ctx_t *ctx)
+{
+    if (!ctx) return FGO_ERR_BADARG;
+    return fgo_dd_ws_doubles(ctx->n,ctx->ns,ctx->nf);
+}
+extern int fgo_dd_nvmax(const fgo_dd_ctx_t *ctx)
+{
+    if (!ctx) return FGO_ERR_BADARG;
+    return ctx->ns*ctx->nf*2+2;
+}
+extern void fgo_dd_ctx_destroy(fgo_dd_ctx_t *ctx)
+{
+    if (!ctx) return;
+    free(ctx->rs); free(ctx->dts); free(ctx->var); free(ctx->svh);
+    free(ctx->y); free(ctx->e); free(ctx->azel); free(ctx->freq);
+    free(ctx);
+}
+extern int fgo_dd_ctx_create(fgo_dd_ctx_t **ctx, rtk_t *rtk,
+                             const obsd_t *obs, int nu, int nr,
+                             const nav_t *nav)
+{
+    fgo_dd_ctx_t *c;
+    const prcopt_t *opt;
+    gtime_t time;
+    int i,j,n=nu+nr,nf;
+
+    if (!ctx) return FGO_ERR_BADARG;
+    *ctx=NULL;
+    if (!rtk||!obs||!nav||nu<=0||nr<=0) return FGO_ERR_BADARG;
+
+    opt=&rtk->opt;
+    nf=NF(opt);
+    time=obs[0].time;
+
+    if (!(c=(fgo_dd_ctx_t *)calloc(1,sizeof(fgo_dd_ctx_t)))) return FGO_ERR_NOMEM;
+    c->rtk=rtk; c->nav=nav; c->obs=obs;
+    c->nu=nu; c->nr=nr; c->n=n; c->nf=nf; c->nx=rtk->nx;
+
+    c->rs  =mat(6,n);      c->dts =mat(2,n);      c->var =mat(1,n);
+    c->y   =mat(nf*2,n);   c->e   =mat(3,n);      c->azel=zeros(2,n);
+    c->freq=zeros(nf,n);   c->svh =imat(n,1);
+    if (!c->rs||!c->dts||!c->var||!c->y||!c->e||!c->azel||!c->freq||!c->svh) {
+        fgo_dd_ctx_destroy(c);
+        return FGO_ERR_NOMEM;
+    }
+    /* mirror relpos(): the system id and SNR fields feed varerr() and the
+       reference-satellite search inside ddres_core() */
+    for (i=0;i<MAXSAT;i++) {
+        rtk->ssat[i].sys=satsys(i+1,NULL);
+        for (j=0;j<NFREQ;j++) {
+            rtk->ssat[i].vsat[j]=0;
+            rtk->ssat[i].snr_rover[j]=0;
+            rtk->ssat[i].snr_base[j]=0;
+        }
+    }
+    satposs(time,obs,n,nav,opt->sateph,c->rs,c->dts,c->var,c->svh);
+
+    /* base residuals: fixed for the epoch, since rtk->rb does not move */
+    if (!zdres(1,obs+nu,nr,c->rs+nu*6,c->dts+nu*2,c->var+nu,c->svh+nu,nav,
+               rtk->rb,opt,c->y+nu*nf*2,c->e+nu*3,c->azel+nu*2,c->freq+nu*nf)) {
+        trace(2,"fgo: base station position error\n");
+        fgo_dd_ctx_destroy(c);
+        return FGO_ERR_BADARG;
+    }
+    c->dt=opt->intpref?intpres(time,obs+nu,nr,nav,rtk,c->y+nu*nf*2):
+                       timediff(time,obs[nu].time);
+
+    if ((c->ns=selsat(obs,c->azel,nu,nr,opt,c->sat,c->iu,c->ir))<=0) {
+        trace(2,"fgo: no common satellite\n");
+        fgo_dd_ctx_destroy(c);
+        return FGO_ERR_BADARG;
+    }
+    for (i=0;i<c->ns;i++) for (j=0;j<nf;j++) {
+        rtk->ssat[c->sat[i]-1].snr_rover[j]=obs[c->iu[i]].SNR[j];
+        rtk->ssat[c->sat[i]-1].snr_base[j] =obs[c->ir[i]].SNR[j];
+    }
+    for (i=0;i<DDRES_MAXBLK;i++) c->ref[i]=-1;
+    c->frozen=0;
+
+    *ctx=c;
+    return FGO_OK;
+}
+/* fill a ddres context from an FGO context and a scratch block --------------*/
+static double *fgo_dd_setup(const fgo_dd_ctx_t *ctx, double *ws,
+                            ddres_ctx_t *dc)
+{
+    const int n=ctx->n,nf=ctx->nf;
+    double *y,*e,*azel,*freq;
+
+    y=ws;    ws+=nf*2*n;
+    e=ws;    ws+=3*n;
+    azel=ws; ws+=2*n;
+    freq=ws; ws+=nf*n;
+
+    /* the base half is state-independent and simply copied; the rover half is
+       overwritten by zdres() below, so eval never writes into ctx */
+    matcpy(y,   ctx->y,   nf*2,n);
+    matcpy(e,   ctx->e,   3,   n);
+    matcpy(azel,ctx->azel,2,   n);
+    matcpy(freq,ctx->freq,nf,  n);
+
+    ddres_ctx_init(dc);
+    dc->opt=&ctx->rtk->opt; dc->obs=ctx->obs; dc->ssat=ctx->rtk->ssat;
+    dc->rb=ctx->rtk->rb; dc->soltime=ctx->rtk->sol.time; dc->dt=ctx->dt;
+    dc->y=y; dc->e=e; dc->azel=azel; dc->freq=freq;
+    dc->sat=ctx->sat; dc->iu=ctx->iu; dc->ir=ctx->ir;
+    dc->ns=ctx->ns; dc->nx=ctx->nx;
+    dc->frozen_ref=ctx->frozen?ctx->ref:NULL;
+
+    /* hand back the mutable rover views and the remaining scratch */
+    return ws;
+}
+extern int fgo_dd_eval(const fgo_dd_ctx_t *ctx, const double *x, int nx,
+                       double *ws, double *v, double *H, double *R,
+                       int *vflg, ddres_stat_t *st)
+{
+    ddres_ctx_t dc;
+    double *rest,*y,*e,*azel,*freq;
+    const int n=ctx?ctx->n:0;
+
+    if (!ctx||!x||!ws||!v||!R||!vflg||!st) return FGO_ERR_BADARG;
+    if (nx!=ctx->nx) return FGO_ERR_BADARG;
+
+    rest=fgo_dd_setup(ctx,ws,&dc);
+    y=ws; e=y+ctx->nf*2*n; azel=e+3*n; freq=azel+2*n;
+
+    /* the relinearisation: geometry, elevation, troposphere mapping and
+       antenna correction are all recomputed at x */
+    if (!zdres(0,ctx->obs,ctx->nu,ctx->rs,ctx->dts,ctx->var,ctx->svh,ctx->nav,
+               x,&ctx->rtk->opt,y,e,azel,freq)) {
+        trace(2,"fgo: rover position error in eval\n");
+        return FGO_ERR_BADARG;
+    }
+    return ddres_core(&dc,x,ctx->rtk->P,rest,v,H,R,vflg,st);
+}
+extern int fgo_dd_freeze_pairs(fgo_dd_ctx_t *ctx)
+{
+    ddres_stat_t *st;
+    double *ws,*v,*H,*R;
+    int *vflg,nv,ny,i;
+
+    if (!ctx) return FGO_ERR_BADARG;
+    if (ctx->frozen) return FGO_OK;     /* idempotent */
+
+    /* called once per epoch, so allocating here is not on the hot path */
+    ny=fgo_dd_nvmax(ctx);
+    st=(ddres_stat_t *)malloc(sizeof(ddres_stat_t));
+    ws=mat(fgo_dd_ws_size(ctx),1);
+    v=mat(ny,1); H=zeros(ctx->nx,ny); R=mat(ny,ny); vflg=imat(ny,1);
+    if (!st||!ws||!v||!H||!R||!vflg) {
+        free(st); free(ws); free(v); free(H); free(R); free(vflg);
+        return FGO_ERR_NOMEM;
+    }
+    /* run once in dynamic mode at the current estimate and keep the choice */
+    nv=fgo_dd_eval(ctx,ctx->rtk->x,ctx->nx,ws,v,H,R,vflg,st);
+    if (nv>=0) {
+        for (i=0;i<DDRES_MAXBLK;i++) ctx->ref[i]=st->ref[i];
+        ctx->frozen=1;
+    }
+    free(st); free(ws); free(v); free(H); free(R); free(vflg);
+    return nv<0?nv:FGO_OK;
 }
 /* index for single to double-difference transformation matrix (D') --------------------*/
 static int ddidx(rtk_t *rtk, int *ix, int gps, int glo, int sbs)

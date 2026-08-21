@@ -46,9 +46,13 @@ bad=0
 for f in "$RTKLIB_ROOT"/src/*.c; do
     n=$((n+1))
     # shellcheck disable=SC2086
+    # src/fgo is on the path because rtkpos.c includes rtklib_fgo_api.h; that
+    # header is itself pure C, which check 1 of test/fgo/check_fgo_abi.sh
+    # verifies independently.
     if ! "$cc" -fsyntax-only -std=c99 -Wall -pedantic \
             -Wno-unused-but-set-variable \
-            -I"$RTKLIB_ROOT/src" $OPTS "$f" 2>"$work/cc.err"; then
+            -I"$RTKLIB_ROOT/src" -I"$RTKLIB_ROOT/src/fgo" $OPTS "$f" \
+            2>"$work/cc.err"; then
         echo "  FAIL $(basename "$f")"
         sed 's/^/      /' "$work/cc.err" | head -5
         bad=$((bad+1))
@@ -73,7 +77,8 @@ make -B -s -C "$src" CC="$cc" LDLIBS="$ldlibs" >"$work/build.log" 2>&1 || {
 objs=$(ls "$src"/*.o | grep -v '/rnx2rtkp\.o$' | tr '\n' ' ')
 
 # shellcheck disable=SC2086
-"$cxx" -std=c++17 -Wall -Wextra -pedantic -I"$RTKLIB_ROOT/src" $OPTS \
+"$cxx" -std=c++17 -Wall -Wextra -pedantic -I"$RTKLIB_ROOT/src" \
+    -I"$RTKLIB_ROOT/src/fgo" $OPTS \
     "$here/cxx_abi_probe.cpp" $objs $ldlibs -o "$work/cxx_abi_probe" \
     2>"$work/cxx.err" || {
     echo "  FAIL C++ compile/link"

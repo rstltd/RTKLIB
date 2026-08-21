@@ -133,22 +133,37 @@ EXPORT void fgo_dd_ctx_destroy(fgo_dd_ctx_t *ctx);
 EXPORT int  fgo_dd_freeze_pairs(fgo_dd_ctx_t *ctx);
 
 /* Re-evaluate the double-differenced residuals and their Jacobian at state x.
-   Returns the number of rows written, or a negative error code.  Size the
-   outputs with fgo_dd_nvmax(); v and vflg need that many entries, H that many
-   rows of nx columns, R that many squared.                                  */
+   Returns the number of rows written, or a negative error code.
+
+   This is the hot path: an optimizer calls it once per factor per
+   linearisation, so it allocates nothing.  All scratch comes from ws, which
+   must hold at least fgo_dd_ws_size(ctx) doubles, and st receives the
+   per-satellite results -- including rowrej, which flags rows whose residual
+   exceeded the innovation threshold so the caller can down-weight rather than
+   drop them.  Both are caller-owned and neither may be NULL.
+
+   Size the outputs with fgo_dd_nvmax(): v and vflg need that many entries, H
+   that many rows of nx columns, R that many squared.
+
+   Pure: ctx is not modified, so contexts may be evaluated concurrently.     */
 EXPORT int  fgo_dd_eval(const fgo_dd_ctx_t *ctx, const double *x, int nx,
-                        double *v, double *H, double *R, int *vflg);
+                        double *ws, double *v, double *H, double *R,
+                        int *vflg, ddres_stat_t *st);
 
 /* Upper bound on the rows fgo_dd_eval() writes for this context.            */
 EXPORT int  fgo_dd_nvmax(const fgo_dd_ctx_t *ctx);
+
+/* Doubles of scratch fgo_dd_eval() needs for this context.                  */
+EXPORT int  fgo_dd_ws_size(const fgo_dd_ctx_t *ctx);
 
 /* Undifferenced pseudorange equivalents (plan.md 4.2.2).                    */
 EXPORT int  fgo_pr_ctx_create (fgo_pr_ctx_t **ctx, rtk_t *rtk,
                                const obsd_t *obs, int n, const nav_t *nav);
 EXPORT void fgo_pr_ctx_destroy(fgo_pr_ctx_t *ctx);
 EXPORT int  fgo_pr_eval(const fgo_pr_ctx_t *ctx, const double *x, int nx,
-                        double *v, double *H, double *R);
+                        double *ws, double *v, double *H, double *R);
 EXPORT int  fgo_pr_nvmax(const fgo_pr_ctx_t *ctx);
+EXPORT int  fgo_pr_ws_size(const fgo_pr_ctx_t *ctx);
 
 /* The error model is deliberately NOT duplicated here.  plan.md 4.6 lists
    fgo_obsvar_rtk() and fgo_obsvar_spp(), but those would be exact aliases of
