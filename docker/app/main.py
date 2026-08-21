@@ -15,6 +15,7 @@ silently served by the EKF.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -39,56 +40,106 @@ app = FastAPI(
 )
 
 
-@app.middleware("http")
-async def _limit_body(request, call_next):
-    """Reject oversized bodies before the multipart parser spools them.
+class BodySizeLimitMiddleware:
+    """Reject oversized request bodies before anything is written to disk.
 
-    Checking inside the endpoint is too late: Starlette has already parsed the
-    whole body and written each part to a temporary file by the time the
-    handler runs, so a limit enforced there bounds only the second copy. An
-    oversized upload would fill the container's tmpfs and be killed rather than
-    receiving the 413 this service advertises.
+    Enforcing this inside the endpoint is too late: Starlette parses the whole
+    body and spools every part to a temporary file before the handler runs, so
+    a limit there bounds only the second copy. An oversized upload would fill
+    the container's tmpfs and be killed rather than receiving a 413.
 
-    Content-Length covers ordinary clients. A chunked request has none, and is
-    bounded instead by the receive wrapper below, which counts bytes as they
-    arrive and aborts the moment the budget is gone.
+    Written as raw ASGI rather than as an http middleware because FastAPI
+    catches exceptions raised while it parses the body and turns them into
+    "There was an error parsing the body" with status 400 -- so a limit that
+    signals by raising never reaches an outer handler. Measured: a 3 MB
+    chunked body against a 1 MB limit produced 400, not 413. Instead the
+    overflow is recorded and the downstream response is REPLACED on its way
+    out, which works whichever way the framework chooses to fail.
+
+    Content-Length is checked first, which covers ordinary clients without
+    reading a byte. Chunked requests declare no length, so their bytes are
+    counted as they arrive.
     """
-    limit = MAX_UPLOAD_MB * 1024 * 1024
-    declared = request.headers.get("content-length")
-    if declared is not None:
-        try:
-            if int(declared) > limit:
-                return JSONResponse(
-                    {"detail": f"body exceeds {MAX_UPLOAD_MB} MB"},
-                    status_code=413,
-                )
-        except ValueError:
-            return JSONResponse({"detail": "bad content-length"}, status_code=400)
-    else:
+
+    def __init__(self, app, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") != "http" or scope.get("method") not in (
+            "POST",
+            "PUT",
+            "PATCH",
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {k.lower(): v for k, v in scope.get("headers", [])}
+        declared = headers.get(b"content-length")
+        if declared is not None:
+            try:
+                if int(declared) > self.max_bytes:
+                    await self._reject(send)
+                    return
+            except ValueError:
+                pass  # malformed; the counter below still bounds it
+
+        overflow = False
         received = 0
-        original = request.receive
 
         async def counting_receive():
-            nonlocal received
-            message = await original()
-            if message["type"] == "http.request":
+            nonlocal overflow, received
+            message = await receive()
+            if message.get("type") == "http.request":
                 received += len(message.get("body", b""))
-                if received > limit:
-                    raise _TooLarge()
+                if received > self.max_bytes:
+                    overflow = True
+                    # Report a disconnect so the parser stops pulling rather
+                    # than waiting for a body that will never be accepted.
+                    return {"type": "http.disconnect"}
             return message
 
-        request._receive = counting_receive  # noqa: SLF001
+        async def replacing_send(message):
+            if overflow:
+                if message.get("type") == "http.response.start":
+                    await self._start(send)
+                    return
+                if message.get("type") == "http.response.body":
+                    await self._body(send)
+                    return
+            await send(message)
 
-    try:
-        return await call_next(request)
-    except _TooLarge:
-        return JSONResponse(
-            {"detail": f"body exceeds {MAX_UPLOAD_MB} MB"}, status_code=413
+        await self.app(scope, counting_receive, replacing_send)
+
+    def _payload(self) -> bytes:
+        mb = self.max_bytes // (1024 * 1024)
+        return json.dumps({"detail": f"body exceeds {mb} MB"}).encode()
+
+    async def _start(self, send) -> None:
+        body = self._payload()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            }
         )
 
+    async def _body(self, send) -> None:
+        await send(
+            {"type": "http.response.body", "body": self._payload(), "more_body": False}
+        )
 
-class _TooLarge(Exception):
-    """Raised from the receive wrapper when a chunked body runs over."""
+    async def _reject(self, send) -> None:
+        await self._start(send)
+        await self._body(send)
+
+
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_UPLOAD_MB * 1024 * 1024)
+
 
 
 def _run(args: list[str], timeout: int) -> subprocess.CompletedProcess:
@@ -330,7 +381,16 @@ def _is_single_point(conf: Path) -> bool:
     for line in conf.read_text().splitlines():
         if line.strip().startswith("pos1-posmode"):
             value = line.split("=", 1)[1].split("#", 1)[0].strip().lower()
-            return value in {"single", "0", "ppp-kine", "ppp-static", "ppp-fixed"}
+            # MODOPT in src/options.c: 0 single, 1 dgps, 2 kinematic,
+            # 3 static, 4 static-start, 5 movingbase, 6 fixed, 7 ppp-kine,
+            # 8 ppp-static, 9 ppp-fixed. Either spelling is valid in a
+            # configuration file, so both are accepted.
+            return value in {
+                "single", "0",
+                "ppp-kine", "7",
+                "ppp-static", "8",
+                "ppp-fixed", "9",
+            }
     return False
 
 
